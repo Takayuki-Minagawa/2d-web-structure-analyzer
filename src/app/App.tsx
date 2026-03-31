@@ -6,6 +6,7 @@ import { ResultsPanel } from '../ui/tables/ResultsPanel';
 import { HelpDialog } from '../ui/HelpDialog';
 import { useProjectStore } from '../state/projectStore';
 import { useViewStore } from '../state/viewStore';
+import { useSelectionStore } from '../state/selectionStore';
 import { useT, useI18nStore } from '../i18n';
 import type { WorkerResponse } from '../worker/protocol';
 import type { ProjectFile } from '../core/model/types';
@@ -28,6 +29,7 @@ export const App: React.FC = () => {
   const isAnalyzing = useProjectStore((s) => s.isAnalyzing);
   const loadModel = useProjectStore((s) => s.loadModel);
   const resetModel = useProjectStore((s) => s.resetModel);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
 
   // Apply theme to document
   useEffect(() => {
@@ -65,6 +67,12 @@ export const App: React.FC = () => {
       workerRef.current.onmessage = (e: MessageEvent<WorkerResponse>) => {
         setAnalysisResult(e.data);
       };
+      workerRef.current.onerror = () => {
+        setAnalysisResult({
+          type: 'analyze-error',
+          error: { type: 'numerical', message: 'Worker crashed unexpectedly.' },
+        });
+      };
     }
 
     setAnalyzing(true);
@@ -98,6 +106,7 @@ export const App: React.FC = () => {
         try {
           const data = JSON.parse(reader.result as string) as ProjectFile;
           if (data.model) {
+            clearSelection();
             loadModel(data.model);
           }
         } catch {
@@ -132,8 +141,9 @@ export const App: React.FC = () => {
       ],
       units: { force: 'kN', length: 'm', moment: 'kN·m' },
     };
+    clearSelection();
     loadModel(sampleModel);
-  }, [loadModel]);
+  }, [loadModel, clearSelection]);
 
   return (
     <div className="app-layout">
@@ -143,7 +153,7 @@ export const App: React.FC = () => {
           <button onClick={handleLoadSample}>{t('app.loadSample')}</button>
           <button onClick={handleImport}>{t('app.import')}</button>
           <button onClick={handleExport}>{t('app.export')}</button>
-          <button onClick={resetModel}>{t('app.new')}</button>
+          <button onClick={() => { clearSelection(); resetModel(); }}>{t('app.new')}</button>
           <button className="top-icon-btn" onClick={toggleTheme} title={theme === 'dark' ? t('theme.light') : t('theme.dark')}>
             {theme === 'dark' ? '\u2600' : '\u263E'}
           </button>

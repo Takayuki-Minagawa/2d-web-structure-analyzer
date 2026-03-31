@@ -19,6 +19,8 @@
   --border: #313244;
   --surface: #1e1e2e;
   --modal-backdrop: rgba(0, 0, 0, 0.6);
+  --canvas-support: #fab387;
+  --canvas-moment: #cba6f7;
 }
 
 [data-theme="light"] {
@@ -35,6 +37,8 @@
   --border: #bcc0cc;
   --surface: #eff1f5;
   --modal-backdrop: rgba(0, 0, 0, 0.35);
+  --canvas-support: #df8e1d;
+  --canvas-moment: #8839ef;
 }
 
 html, body, #root {

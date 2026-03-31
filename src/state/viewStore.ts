@@ -26,10 +26,22 @@ interface ViewState {
   setDiagramScale: (v: number) => void;
 }
 
+function loadTheme(): Theme {
+  try {
+    const v = localStorage.getItem('theme');
+    if (v === 'light' || v === 'dark') return v;
+  } catch { /* ignore */ }
+  return 'dark';
+}
+
+function saveTheme(theme: Theme) {
+  try { localStorage.setItem('theme', theme); } catch { /* ignore */ }
+}
+
 export const useViewStore = create<ViewState>((set) => ({
   displayMode: 'model',
   editTool: 'select',
-  theme: 'dark',
+  theme: loadTheme(),
   showNodeLabels: true,
   showMemberLabels: true,
   showLoads: true,
@@ -38,8 +50,8 @@ export const useViewStore = create<ViewState>((set) => ({
   diagramScale: 1,
   setDisplayMode: (mode) => set({ displayMode: mode }),
   setEditTool: (tool) => set({ editTool: tool }),
-  setTheme: (theme) => set({ theme }),
-  toggleTheme: () => set((s) => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
+  setTheme: (theme) => { saveTheme(theme); set({ theme }); },
+  toggleTheme: () => set((s) => { const next = s.theme === 'dark' ? 'light' : 'dark'; saveTheme(next); return { theme: next }; }),
   setShowNodeLabels: (v) => set({ showNodeLabels: v }),
   setShowMemberLabels: (v) => set({ showMemberLabels: v }),
   setShowLoads: (v) => set({ showLoads: v }),

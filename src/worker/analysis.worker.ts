@@ -52,7 +52,7 @@ self.onmessage = (e: MessageEvent<WorkerRequest>) => {
         type: 'analyze-error',
         error: {
           type: analysisErr.type ?? 'numerical',
-          message: analysisErr.message ?? '不明なエラーが発生しました。',
+          message: analysisErr.message ?? 'An unknown error occurred during analysis.',
         },
       };
       self.postMessage(resp);

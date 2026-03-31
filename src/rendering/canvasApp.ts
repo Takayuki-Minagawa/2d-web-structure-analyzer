@@ -26,27 +26,60 @@ export interface RenderOptions {
 
 const NODE_RADIUS = 5;
 const HIT_RADIUS = 10;
-const COLORS = {
-  background: '#1e1e2e',
-  grid: '#2a2a3e',
-  member: '#89b4fa',
-  memberSelected: '#f9e2af',
-  node: '#a6e3a1',
-  nodeSelected: '#f38ba8',
-  support: '#fab387',
-  load: '#f38ba8',
-  deformed: '#f9e2af',
-  axialPositive: '#f38ba8',
-  axialNegative: '#89b4fa',
-  shear: '#a6e3a1',
-  moment: '#cba6f7',
-  text: '#cdd6f4',
-  diagramFill: 'rgba(203, 166, 247, 0.2)',
-};
+
+interface CanvasColors {
+  background: string;
+  grid: string;
+  member: string;
+  memberSelected: string;
+  node: string;
+  nodeSelected: string;
+  support: string;
+  load: string;
+  deformed: string;
+  axialPositive: string;
+  axialNegative: string;
+  shear: string;
+  moment: string;
+  text: string;
+  diagramFill: string;
+}
+
+function readThemeColors(): CanvasColors {
+  const style = getComputedStyle(document.documentElement);
+  const get = (name: string) => style.getPropertyValue(name).trim();
+
+  const bg = get('--bg') || '#1e1e2e';
+  const accent = get('--accent') || '#89b4fa';
+  const text = get('--text') || '#cdd6f4';
+  const danger = get('--danger') || '#f38ba8';
+  const warning = get('--warning') || '#f9e2af';
+  const success = get('--success') || '#a6e3a1';
+  const border = get('--border') || '#313244';
+
+  return {
+    background: bg,
+    grid: border,
+    member: accent,
+    memberSelected: warning,
+    node: success,
+    nodeSelected: danger,
+    support: get('--canvas-support') || '#fab387',
+    load: danger,
+    deformed: warning,
+    axialPositive: danger,
+    axialNegative: accent,
+    shear: success,
+    moment: get('--canvas-moment') || '#cba6f7',
+    text,
+    diagramFill: 'rgba(128, 128, 128, 0.15)',
+  };
+}
 
 export class CanvasRenderer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
+  private colors: CanvasColors = readThemeColors();
   public viewport: CanvasViewport = { offsetX: 0, offsetY: 0, scale: 50 };
 
   constructor(canvas: HTMLCanvasElement) {
@@ -83,13 +116,16 @@ export class CanvasRenderer {
     result: AnalysisResult | null,
     options: RenderOptions
   ) {
+    // Re-read theme colors on each render
+    this.colors = readThemeColors();
+
     const { ctx, canvas } = this;
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.width / dpr;
     const h = canvas.height / dpr;
 
     // Clear
-    ctx.fillStyle = COLORS.background;
+    ctx.fillStyle = this.colors.background;
     ctx.fillRect(0, 0, w, h);
 
     // Grid
@@ -136,7 +172,7 @@ export class CanvasRenderer {
       for (let i = 0; i < model.nodes.length; i++) {
         const node = model.nodes[i]!;
         const [sx, sy] = this.modelToScreen(node.x, node.y);
-        ctx.fillStyle = COLORS.text;
+        ctx.fillStyle = this.colors.text;
         ctx.font = '11px monospace';
         ctx.fillText(`N${i}`, sx + 8, sy - 8);
       }
@@ -151,7 +187,7 @@ export class CanvasRenderer {
             (ni.x + nj.x) / 2,
             (ni.y + nj.y) / 2
           );
-          ctx.fillStyle = COLORS.text;
+          ctx.fillStyle = this.colors.text;
           ctx.font = '11px monospace';
           ctx.fillText(`M${i}`, sx + 5, sy - 5);
         }
@@ -164,7 +200,7 @@ export class CanvasRenderer {
     const scale = this.viewport.scale;
     const step = this.getGridStep(scale);
 
-    ctx.strokeStyle = COLORS.grid;
+    ctx.strokeStyle = this.colors.grid;
     ctx.lineWidth = 0.5;
 
     const [x0, y0] = this.screenToModel(0, h);
@@ -202,7 +238,7 @@ export class CanvasRenderer {
 
     ctx.beginPath();
     ctx.arc(sx, sy, NODE_RADIUS, 0, Math.PI * 2);
-    ctx.fillStyle = selected ? COLORS.nodeSelected : COLORS.node;
+    ctx.fillStyle = selected ? this.colors.nodeSelected : this.colors.node;
     ctx.fill();
   }
 
@@ -223,7 +259,7 @@ export class CanvasRenderer {
     ctx.beginPath();
     ctx.moveTo(x1, y1);
     ctx.lineTo(x2, y2);
-    ctx.strokeStyle = selected ? COLORS.memberSelected : COLORS.member;
+    ctx.strokeStyle = selected ? this.colors.memberSelected : this.colors.member;
     ctx.lineWidth = selected ? 3 : 2;
     ctx.stroke();
   }
@@ -233,7 +269,7 @@ export class CanvasRenderer {
     const [sx, sy] = this.modelToScreen(node.x, node.y);
     const size = 12;
 
-    ctx.strokeStyle = COLORS.support;
+    ctx.strokeStyle = this.colors.support;
     ctx.lineWidth = 2;
 
     if (node.restraint.ux && node.restraint.uy && node.restraint.rz) {
@@ -243,7 +279,7 @@ export class CanvasRenderer {
       ctx.lineTo(sx - size, sy + size);
       ctx.lineTo(sx + size, sy + size);
       ctx.closePath();
-      ctx.fillStyle = COLORS.support;
+      ctx.fillStyle = this.colors.support;
       ctx.fill();
       // Ground hatching
       for (let i = -1; i <= 1; i++) {
@@ -296,8 +332,8 @@ export class CanvasRenderer {
     const arrowLen = 40;
     const arrowHead = 8;
 
-    ctx.strokeStyle = COLORS.load;
-    ctx.fillStyle = COLORS.load;
+    ctx.strokeStyle = this.colors.load;
+    ctx.fillStyle = this.colors.load;
     ctx.lineWidth = 2;
 
     if (Math.abs(fx) > 1e-10) {
@@ -372,8 +408,8 @@ export class CanvasRenderer {
     const px = -uy;
     const py = ux;
 
-    ctx.strokeStyle = COLORS.load;
-    ctx.fillStyle = COLORS.load;
+    ctx.strokeStyle = this.colors.load;
+    ctx.fillStyle = this.colors.load;
     ctx.lineWidth = 1.5;
 
     const arrowSize = 25;
@@ -494,7 +530,7 @@ export class CanvasRenderer {
       const sin = dy / L;
 
       ctx.beginPath();
-      ctx.strokeStyle = COLORS.deformed;
+      ctx.strokeStyle = this.colors.deformed;
       ctx.lineWidth = 2;
 
       for (let i = 0; i < diagram.points.length; i++) {
@@ -542,7 +578,7 @@ export class CanvasRenderer {
       const px = -sin;
       const py = cos;
 
-      const fillColor = COLORS.diagramFill;
+      const fillColor = this.colors.diagramFill;
 
       // Draw filled diagram
       ctx.beginPath();
@@ -582,13 +618,7 @@ export class CanvasRenderer {
       ctx.lineTo(sx1, sy1);
       ctx.closePath();
 
-      if (mode === 'axial') {
-        ctx.fillStyle = 'rgba(137, 180, 250, 0.15)';
-      } else if (mode === 'shear') {
-        ctx.fillStyle = 'rgba(166, 227, 161, 0.15)';
-      } else {
-        ctx.fillStyle = fillColor;
-      }
+      ctx.fillStyle = fillColor;
       ctx.fill();
 
       // Draw outline
@@ -610,18 +640,18 @@ export class CanvasRenderer {
       }
 
       if (mode === 'axial') {
-        ctx.strokeStyle = COLORS.axialPositive;
+        ctx.strokeStyle = this.colors.axialPositive;
       } else if (mode === 'shear') {
-        ctx.strokeStyle = COLORS.shear;
+        ctx.strokeStyle = this.colors.shear;
       } else {
-        ctx.strokeStyle = COLORS.moment;
+        ctx.strokeStyle = this.colors.moment;
       }
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
       // Max/min labels
       ctx.font = '10px monospace';
-      ctx.fillStyle = COLORS.text;
+      ctx.fillStyle = this.colors.text;
       if (maxPt && Math.abs(maxPt.val) > 1e-6) {
         ctx.fillText(maxPt.val.toFixed(2), maxPt.sx + 4, maxPt.sy - 4);
       }
