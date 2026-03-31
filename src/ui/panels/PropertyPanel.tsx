@@ -2,7 +2,9 @@ import React from 'react';
 import { useProjectStore } from '../../state/projectStore';
 import { useSelectionStore } from '../../state/selectionStore';
 import { useViewStore } from '../../state/viewStore';
+import { useT } from '../../i18n';
 import type { StructuralNode, Member, NodalLoad, MemberLoad } from '../../core/model/types';
+import type { TKey } from '../../i18n';
 
 export const PropertyPanel: React.FC = () => {
   const model = useProjectStore((s) => s.model);
@@ -33,12 +35,14 @@ export const PropertyPanel: React.FC = () => {
   const setShowLoads = useViewStore((s) => s.setShowLoads);
   const setShowSupports = useViewStore((s) => s.setShowSupports);
 
+  const t = useT();
+
   const selectedNodes = model.nodes.filter((n) => selectedNodeIds.has(n.id));
   const selectedMembers = model.members.filter((m) => selectedMemberIds.has(m.id));
 
   return (
     <div className="property-panel">
-      <h3>プロパティ</h3>
+      <h3>{t('prop.title')}</h3>
 
       {selectedNodes.length === 1 && (
         <NodeProperties
@@ -70,27 +74,27 @@ export const PropertyPanel: React.FC = () => {
       {selectedNodes.length === 0 && selectedMembers.length === 0 && (
         <>
           <div className="prop-group">
-            <div className="prop-title">表示設定</div>
+            <div className="prop-title">{t('prop.displaySettings')}</div>
             <label className="checkbox-label">
               <input type="checkbox" checked={showNodeLabels} onChange={(e) => setShowNodeLabels(e.target.checked)} />
-              節点番号
+              {t('prop.nodeLabels')}
             </label>
             <label className="checkbox-label">
               <input type="checkbox" checked={showMemberLabels} onChange={(e) => setShowMemberLabels(e.target.checked)} />
-              部材番号
+              {t('prop.memberLabels')}
             </label>
             <label className="checkbox-label">
               <input type="checkbox" checked={showLoads} onChange={(e) => setShowLoads(e.target.checked)} />
-              荷重表示
+              {t('prop.showLoads')}
             </label>
             <label className="checkbox-label">
               <input type="checkbox" checked={showSupports} onChange={(e) => setShowSupports(e.target.checked)} />
-              支持条件
+              {t('prop.supports')}
             </label>
           </div>
           <div className="prop-group">
-            <div className="prop-title">スケール</div>
-            <label>変形倍率: {deformationScale.toFixed(0)}</label>
+            <div className="prop-title">{t('prop.scale')}</div>
+            <label>{t('prop.deformScale')} {deformationScale.toFixed(0)}</label>
             <input
               type="range"
               min="1"
@@ -98,7 +102,7 @@ export const PropertyPanel: React.FC = () => {
               value={deformationScale}
               onChange={(e) => setDeformationScale(Number(e.target.value))}
             />
-            <label>断面力倍率: {diagramScale.toFixed(1)}</label>
+            <label>{t('prop.diagramScale')} {diagramScale.toFixed(1)}</label>
             <input
               type="range"
               min="0.1"
@@ -124,9 +128,10 @@ const NodeProperties: React.FC<{
   onUpdateLoad: (id: string, updates: Partial<Omit<NodalLoad, 'id'>>) => void;
   onRemoveLoad: (id: string) => void;
 }> = ({ node, nodalLoads, onUpdate, onDelete, onAddLoad, onUpdateLoad, onRemoveLoad }) => {
+  const t = useT();
   return (
     <div className="prop-group">
-      <div className="prop-title">節点 {node.id.substring(0, 5)}</div>
+      <div className="prop-title">{t('prop.node')} {node.id.substring(0, 5)}</div>
       <div className="prop-row">
         <label>X:</label>
         <input
@@ -145,7 +150,7 @@ const NodeProperties: React.FC<{
           onChange={(e) => onUpdate(node.id, { y: Number(e.target.value) })}
         />
       </div>
-      <div className="prop-title">拘束条件</div>
+      <div className="prop-title">{t('prop.restraints')}</div>
       <label className="checkbox-label">
         <input
           type="checkbox"
@@ -154,7 +159,7 @@ const NodeProperties: React.FC<{
             onUpdate(node.id, { restraint: { ...node.restraint, ux: e.target.checked } })
           }
         />
-        X方向 (ux)
+        {t('prop.dirX')}
       </label>
       <label className="checkbox-label">
         <input
@@ -164,7 +169,7 @@ const NodeProperties: React.FC<{
             onUpdate(node.id, { restraint: { ...node.restraint, uy: e.target.checked } })
           }
         />
-        Y方向 (uy)
+        {t('prop.dirY')}
       </label>
       <label className="checkbox-label">
         <input
@@ -174,11 +179,11 @@ const NodeProperties: React.FC<{
             onUpdate(node.id, { restraint: { ...node.restraint, rz: e.target.checked } })
           }
         />
-        回転 (rz)
+        {t('prop.rotation')}
       </label>
       {nodalLoads.length > 0 && (
         <>
-          <div className="prop-title">節点荷重</div>
+          <div className="prop-title">{t('prop.nodalLoads')}</div>
           {nodalLoads.map((load) => (
             <div key={load.id} className="load-item">
               <div className="prop-row">
@@ -208,14 +213,14 @@ const NodeProperties: React.FC<{
                   onChange={(e) => onUpdateLoad(load.id, { mz: Number(e.target.value) })}
                 />
               </div>
-              <button className="danger small" onClick={() => onRemoveLoad(load.id)}>荷重削除</button>
+              <button className="danger small" onClick={() => onRemoveLoad(load.id)}>{t('prop.removeLoad')}</button>
             </div>
           ))}
         </>
       )}
       <div className="prop-actions">
-        <button onClick={() => onAddLoad(node.id)}>荷重追加</button>
-        <button className="danger" onClick={() => onDelete(node.id)}>削除</button>
+        <button onClick={() => onAddLoad(node.id)}>{t('prop.addLoad')}</button>
+        <button className="danger" onClick={() => onDelete(node.id)}>{t('prop.delete')}</button>
       </div>
     </div>
   );
@@ -231,19 +236,20 @@ const MemberProperties: React.FC<{
   onUpdateLoad: (id: string, updates: Partial<Omit<MemberLoad, 'id'>>) => void;
   onRemoveLoad: (id: string) => void;
 }> = ({ member, model, memberLoads, onUpdate, onDelete, onAddLoad, onUpdateLoad, onRemoveLoad }) => {
+  const t = useT();
   const ni = model.nodes.find((n) => n.id === member.ni);
   const nj = model.nodes.find((n) => n.id === member.nj);
   const L = ni && nj ? Math.sqrt((nj.x - ni.x) ** 2 + (nj.y - ni.y) ** 2) : 0;
 
   return (
     <div className="prop-group">
-      <div className="prop-title">部材 {member.id.substring(0, 5)}</div>
+      <div className="prop-title">{t('prop.member')} {member.id.substring(0, 5)}</div>
       <div className="prop-row">
-        <label>長さ:</label>
+        <label>{t('prop.length')}</label>
         <span>{L.toFixed(3)} m</span>
       </div>
       <div className="prop-row">
-        <label>材料:</label>
+        <label>{t('prop.material')}</label>
         <select
           value={member.materialId}
           onChange={(e) => onUpdate(member.id, { materialId: e.target.value })}
@@ -254,7 +260,7 @@ const MemberProperties: React.FC<{
         </select>
       </div>
       <div className="prop-row">
-        <label>断面:</label>
+        <label>{t('prop.section')}</label>
         <select
           value={member.sectionId}
           onChange={(e) => onUpdate(member.id, { sectionId: e.target.value })}
@@ -266,11 +272,11 @@ const MemberProperties: React.FC<{
       </div>
       {memberLoads.length > 0 && (
         <>
-          <div className="prop-title">部材荷重</div>
+          <div className="prop-title">{t('prop.memberLoads')}</div>
           {memberLoads.map((load) => (
             <div key={load.id} className="load-item">
               <div className="prop-row">
-                <label>種類:</label>
+                <label>{t('prop.loadType')}</label>
                 <select
                   value={load.type}
                   onChange={(e) => {
@@ -282,12 +288,12 @@ const MemberProperties: React.FC<{
                     }
                   }}
                 >
-                  <option value="udl">等分布</option>
-                  <option value="point">集中</option>
+                  <option value="udl">{t('prop.loadTypeUdl')}</option>
+                  <option value="point">{t('prop.loadTypePoint')}</option>
                 </select>
               </div>
               <div className="prop-row">
-                <label>方向:</label>
+                <label>{t('prop.loadDirection')}</label>
                 <select
                   value={load.direction}
                   onChange={(e) => onUpdateLoad(load.id, { direction: e.target.value as 'localX' | 'localY' })}
@@ -297,7 +303,7 @@ const MemberProperties: React.FC<{
                 </select>
               </div>
               <div className="prop-row">
-                <label>{load.type === 'udl' ? '強度:' : '大きさ:'}</label>
+                <label>{load.type === 'udl' ? t('prop.loadIntensity') : t('prop.loadMagnitude')}</label>
                 <input
                   type="number"
                   value={load.value}
@@ -307,7 +313,7 @@ const MemberProperties: React.FC<{
               </div>
               {load.type === 'point' && (
                 <div className="prop-row">
-                  <label>位置 a:</label>
+                  <label>{t('prop.loadPosition')}</label>
                   <input
                     type="number"
                     value={load.a}
@@ -318,14 +324,14 @@ const MemberProperties: React.FC<{
                   />
                 </div>
               )}
-              <button className="danger small" onClick={() => onRemoveLoad(load.id)}>荷重削除</button>
+              <button className="danger small" onClick={() => onRemoveLoad(load.id)}>{t('prop.removeLoad')}</button>
             </div>
           ))}
         </>
       )}
       <div className="prop-actions">
-        <button onClick={() => onAddLoad(member.id)}>荷重追加</button>
-        <button className="danger" onClick={() => onDelete(member.id)}>削除</button>
+        <button onClick={() => onAddLoad(member.id)}>{t('prop.addLoad')}</button>
+        <button className="danger" onClick={() => onDelete(member.id)}>{t('prop.delete')}</button>
       </div>
     </div>
   );
@@ -336,16 +342,17 @@ const ModelSummary: React.FC = () => {
   const analysisResult = useProjectStore((s) => s.analysisResult);
   const analysisError = useProjectStore((s) => s.analysisError);
   const isResultStale = useProjectStore((s) => s.isResultStale);
+  const t = useT();
 
   return (
     <div className="prop-group">
-      <div className="prop-title">モデル情報</div>
-      <div className="prop-row"><label>節点:</label><span>{model.nodes.length}</span></div>
-      <div className="prop-row"><label>部材:</label><span>{model.members.length}</span></div>
-      <div className="prop-row"><label>節点荷重:</label><span>{model.nodalLoads.length}</span></div>
-      <div className="prop-row"><label>部材荷重:</label><span>{model.memberLoads.length}</span></div>
+      <div className="prop-title">{t('prop.modelInfo')}</div>
+      <div className="prop-row"><label>{t('prop.nodeCount')}</label><span>{model.nodes.length}</span></div>
+      <div className="prop-row"><label>{t('prop.memberCount')}</label><span>{model.members.length}</span></div>
+      <div className="prop-row"><label>{t('prop.nodalLoadCount')}</label><span>{model.nodalLoads.length}</span></div>
+      <div className="prop-row"><label>{t('prop.memberLoadCount')}</label><span>{model.memberLoads.length}</span></div>
       {isResultStale && analysisResult && (
-        <div className="warning-text">結果が古くなっています。再解析してください。</div>
+        <div className="warning-text">{t('prop.staleWarning')}</div>
       )}
       {analysisError && (
         <div className="error-text">{analysisError.message}</div>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useProjectStore } from '../../state/projectStore';
+import { useT } from '../../i18n';
 
 type TabId = 'displacements' | 'reactions' | 'endForces';
 
@@ -10,9 +11,10 @@ export const ResultsPanel: React.FC = () => {
   const error = useProjectStore((s) => s.analysisError);
   const isAnalyzing = useProjectStore((s) => s.isAnalyzing);
   const isResultStale = useProjectStore((s) => s.isResultStale);
+  const t = useT();
 
   if (isAnalyzing) {
-    return <div className="results-panel"><p>解析中...</p></div>;
+    return <div className="results-panel"><p>{t('results.analyzing')}</p></div>;
   }
 
   if (error) {
@@ -24,23 +26,23 @@ export const ResultsPanel: React.FC = () => {
   }
 
   if (!result) {
-    return <div className="results-panel"><p className="muted">解析結果がありません</p></div>;
+    return <div className="results-panel"><p className="muted">{t('results.noResults')}</p></div>;
   }
 
   return (
     <div className="results-panel">
-      {isResultStale && <div className="warning-text">結果が古くなっています（モデル変更後未更新）</div>}
+      {isResultStale && <div className="warning-text">{t('results.stale')}</div>}
       <div className="tab-bar">
-        <button className={activeTab === 'displacements' ? 'active' : ''} onClick={() => setActiveTab('displacements')}>節点変位</button>
-        <button className={activeTab === 'reactions' ? 'active' : ''} onClick={() => setActiveTab('reactions')}>反力</button>
-        <button className={activeTab === 'endForces' ? 'active' : ''} onClick={() => setActiveTab('endForces')}>部材端力</button>
+        <button className={activeTab === 'displacements' ? 'active' : ''} onClick={() => setActiveTab('displacements')}>{t('results.displacements')}</button>
+        <button className={activeTab === 'reactions' ? 'active' : ''} onClick={() => setActiveTab('reactions')}>{t('results.reactions')}</button>
+        <button className={activeTab === 'endForces' ? 'active' : ''} onClick={() => setActiveTab('endForces')}>{t('results.endForces')}</button>
       </div>
 
       {activeTab === 'displacements' && (
         <div className="table-wrapper">
           <table>
             <thead>
-              <tr><th>節点</th><th>ux</th><th>uy</th><th>rz</th></tr>
+              <tr><th>{t('results.node')}</th><th>ux</th><th>uy</th><th>rz</th></tr>
             </thead>
             <tbody>
               {model.nodes.map((n, i) => (
@@ -60,7 +62,7 @@ export const ResultsPanel: React.FC = () => {
         <div className="table-wrapper">
           <table>
             <thead>
-              <tr><th>節点</th><th>Rx</th><th>Ry</th><th>Mz</th></tr>
+              <tr><th>{t('results.node')}</th><th>Rx</th><th>Ry</th><th>Mz</th></tr>
             </thead>
             <tbody>
               {model.nodes
@@ -83,7 +85,7 @@ export const ResultsPanel: React.FC = () => {
         <div className="table-wrapper">
           <table>
             <thead>
-              <tr><th>部材</th><th>Ni</th><th>Vi</th><th>Mi</th><th>Nj</th><th>Vj</th><th>Mj</th></tr>
+              <tr><th>{t('results.member')}</th><th>Ni</th><th>Vi</th><th>Mi</th><th>Nj</th><th>Vj</th><th>Mj</th></tr>
             </thead>
             <tbody>
               {model.members.map((m, idx) => {

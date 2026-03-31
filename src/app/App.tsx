@@ -1,9 +1,12 @@
-import React, { useRef, useCallback, useEffect } from 'react';
+import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { Toolbar } from '../ui/toolbar/Toolbar';
 import { PropertyPanel } from '../ui/panels/PropertyPanel';
 import { CanvasPanel } from '../ui/panels/CanvasPanel';
 import { ResultsPanel } from '../ui/tables/ResultsPanel';
+import { HelpDialog } from '../ui/HelpDialog';
 import { useProjectStore } from '../state/projectStore';
+import { useViewStore } from '../state/viewStore';
+import { useT, useI18nStore } from '../i18n';
 import type { WorkerResponse } from '../worker/protocol';
 import type { ProjectFile } from '../core/model/types';
 import { saveProject, loadProject } from '../persistence/indexedDb';
@@ -11,6 +14,13 @@ import { saveProject, loadProject } from '../persistence/indexedDb';
 export const App: React.FC = () => {
   const workerRef = useRef<Worker | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  const t = useT();
+  const lang = useI18nStore((s) => s.lang);
+  const setLang = useI18nStore((s) => s.setLang);
+  const theme = useViewStore((s) => s.theme);
+  const toggleTheme = useViewStore((s) => s.toggleTheme);
 
   const model = useProjectStore((s) => s.model);
   const setAnalyzing = useProjectStore((s) => s.setAnalyzing);
@@ -18,6 +28,11 @@ export const App: React.FC = () => {
   const isAnalyzing = useProjectStore((s) => s.isAnalyzing);
   const loadModel = useProjectStore((s) => s.loadModel);
   const resetModel = useProjectStore((s) => s.resetModel);
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
 
   // Auto-save with debounce
   useEffect(() => {
@@ -86,13 +101,13 @@ export const App: React.FC = () => {
             loadModel(data.model);
           }
         } catch {
-          alert('JSONファイルの読み込みに失敗しました。');
+          alert(t('app.importError'));
         }
       };
       reader.readAsText(file);
     };
     input.click();
-  }, [loadModel]);
+  }, [loadModel, t]);
 
   const handleLoadSample = useCallback(() => {
     const sampleModel = {
@@ -123,12 +138,21 @@ export const App: React.FC = () => {
   return (
     <div className="app-layout">
       <div className="top-bar">
-        <span className="app-title">2D Frame Analyzer</span>
+        <span className="app-title">{t('app.title')}</span>
         <div className="top-actions">
-          <button onClick={handleLoadSample}>サンプル読込</button>
-          <button onClick={handleImport}>JSON読込</button>
-          <button onClick={handleExport}>JSON保存</button>
-          <button onClick={resetModel}>新規</button>
+          <button onClick={handleLoadSample}>{t('app.loadSample')}</button>
+          <button onClick={handleImport}>{t('app.import')}</button>
+          <button onClick={handleExport}>{t('app.export')}</button>
+          <button onClick={resetModel}>{t('app.new')}</button>
+          <button className="top-icon-btn" onClick={toggleTheme} title={theme === 'dark' ? t('theme.light') : t('theme.dark')}>
+            {theme === 'dark' ? '\u2600' : '\u263E'}
+          </button>
+          <button className="top-icon-btn" onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')} title="Language">
+            {lang === 'ja' ? 'EN' : 'JA'}
+          </button>
+          <button className="top-icon-btn" onClick={() => setHelpOpen(true)} title={t('app.help')}>
+            ?
+          </button>
         </div>
       </div>
       <div className="main-area">
@@ -139,6 +163,7 @@ export const App: React.FC = () => {
         </div>
         <PropertyPanel />
       </div>
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 };

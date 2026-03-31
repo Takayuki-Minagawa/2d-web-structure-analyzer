@@ -1,22 +1,24 @@
 import React from 'react';
 import { useViewStore } from '../../state/viewStore';
+import { useT } from '../../i18n';
 import type { EditTool, DisplayMode } from '../../state/viewStore';
+import type { TKey } from '../../i18n';
 
-const tools: { id: EditTool; label: string; icon: string }[] = [
-  { id: 'select', label: '選択', icon: '⊙' },
-  { id: 'addNode', label: '節点', icon: '＋' },
-  { id: 'addMember', label: '部材', icon: '─' },
-  { id: 'setSupport', label: '支持', icon: '▽' },
-  { id: 'addNodalLoad', label: '節点荷重', icon: '↓' },
-  { id: 'addMemberLoad', label: '部材荷重', icon: '⇣' },
+const tools: { id: EditTool; labelKey: TKey; icon: string }[] = [
+  { id: 'select', labelKey: 'tool.select', icon: '\u2299' },
+  { id: 'addNode', labelKey: 'tool.addNode', icon: '\uFF0B' },
+  { id: 'addMember', labelKey: 'tool.addMember', icon: '\u2500' },
+  { id: 'setSupport', labelKey: 'tool.setSupport', icon: '\u25BD' },
+  { id: 'addNodalLoad', labelKey: 'tool.addNodalLoad', icon: '\u2193' },
+  { id: 'addMemberLoad', labelKey: 'tool.addMemberLoad', icon: '\u21E3' },
 ];
 
-const displayModes: { id: DisplayMode; label: string }[] = [
-  { id: 'model', label: 'モデル' },
-  { id: 'deformation', label: '変形' },
-  { id: 'axial', label: '軸力' },
-  { id: 'shear', label: 'せん断' },
-  { id: 'moment', label: 'モーメント' },
+const displayModes: { id: DisplayMode; labelKey: TKey }[] = [
+  { id: 'model', labelKey: 'display.model' },
+  { id: 'deformation', labelKey: 'display.deformation' },
+  { id: 'axial', labelKey: 'display.axial' },
+  { id: 'shear', labelKey: 'display.shear' },
+  { id: 'moment', labelKey: 'display.moment' },
 ];
 
 export const Toolbar: React.FC<{ onRunAnalysis: () => void }> = ({ onRunAnalysis }) => {
@@ -24,40 +26,41 @@ export const Toolbar: React.FC<{ onRunAnalysis: () => void }> = ({ onRunAnalysis
   const setEditTool = useViewStore((s) => s.setEditTool);
   const displayMode = useViewStore((s) => s.displayMode);
   const setDisplayMode = useViewStore((s) => s.setDisplayMode);
+  const t = useT();
 
   return (
     <div className="toolbar">
       <div className="toolbar-section">
-        <div className="toolbar-title">編集</div>
-        {tools.map((t) => (
+        <div className="toolbar-title">{t('toolbar.edit')}</div>
+        {tools.map((tool) => (
           <button
-            key={t.id}
-            className={`toolbar-btn ${editTool === t.id ? 'active' : ''}`}
-            onClick={() => setEditTool(t.id)}
-            title={t.label}
+            key={tool.id}
+            className={`toolbar-btn ${editTool === tool.id ? 'active' : ''}`}
+            onClick={() => setEditTool(tool.id)}
+            title={t(tool.labelKey)}
           >
-            <span className="toolbar-icon">{t.icon}</span>
-            <span className="toolbar-label">{t.label}</span>
+            <span className="toolbar-icon">{tool.icon}</span>
+            <span className="toolbar-label">{t(tool.labelKey)}</span>
           </button>
         ))}
       </div>
 
       <div className="toolbar-section">
-        <div className="toolbar-title">表示</div>
+        <div className="toolbar-title">{t('toolbar.display')}</div>
         {displayModes.map((m) => (
           <button
             key={m.id}
             className={`toolbar-btn ${displayMode === m.id ? 'active' : ''}`}
             onClick={() => setDisplayMode(m.id)}
           >
-            <span className="toolbar-label">{m.label}</span>
+            <span className="toolbar-label">{t(m.labelKey)}</span>
           </button>
         ))}
       </div>
 
       <div className="toolbar-section">
         <button className="toolbar-btn run-btn" onClick={onRunAnalysis}>
-          ▶ 解析実行
+          {'\u25B6'} {t('toolbar.run')}
         </button>
       </div>
     </div>

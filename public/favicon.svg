@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="12" fill="#1e1e2e"/>
+  <!-- Portal frame -->
+  <line x1="12" y1="52" x2="12" y2="18" stroke="#89b4fa" stroke-width="4" stroke-linecap="round"/>
+  <line x1="12" y1="18" x2="52" y2="18" stroke="#89b4fa" stroke-width="4" stroke-linecap="round"/>
+  <line x1="52" y1="18" x2="52" y2="52" stroke="#89b4fa" stroke-width="4" stroke-linecap="round"/>
+  <!-- Nodes -->
+  <circle cx="12" cy="18" r="3.5" fill="#a6e3a1"/>
+  <circle cx="52" cy="18" r="3.5" fill="#a6e3a1"/>
+  <circle cx="12" cy="52" r="3.5" fill="#f9e2af"/>
+  <circle cx="52" cy="52" r="3.5" fill="#f9e2af"/>
+  <!-- Supports (triangles) -->
+  <polygon points="12,52 6,60 18,60" fill="none" stroke="#f9e2af" stroke-width="2"/>
+  <polygon points="52,52 46,60 58,60" fill="none" stroke="#f9e2af" stroke-width="2"/>
+  <!-- Load arrow -->
+  <line x1="32" y1="4" x2="32" y2="16" stroke="#f38ba8" stroke-width="2.5"/>
+  <polygon points="32,18 28,12 36,12" fill="#f38ba8"/>
+</svg>
