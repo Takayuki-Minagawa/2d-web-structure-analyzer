@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "savedAt": "2026-03-31T00:00:00.000Z",
+  "model": {
+    "nodes": [
+      { "id": "n0", "x": 0, "y": 0, "restraint": { "ux": true, "uy": true, "rz": true } },
+      { "id": "n1", "x": 4, "y": 0, "restraint": { "ux": false, "uy": false, "rz": false } }
+    ],
+    "materials": [
+      { "id": "mat1", "name": "Steel", "E": 205000 }
+    ],
+    "sections": [
+      { "id": "sec1", "name": "H-200x100", "A": 0.0027, "I": 1.84e-5 }
+    ],
+    "members": [
+      { "id": "m1", "ni": "n0", "nj": "n1", "materialId": "mat1", "sectionId": "sec1" }
+    ],
+    "nodalLoads": [
+      { "id": "nl1", "nodeId": "n1", "fx": 0, "fy": -10, "mz": 0 }
+    ],
+    "memberLoads": [],
+    "units": { "force": "kN", "length": "m", "moment": "kN·m" }
+  }
+}
