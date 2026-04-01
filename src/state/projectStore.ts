@@ -16,6 +16,9 @@ function generateId(): string {
   return Math.random().toString(36).substring(2, 9);
 }
 
+const forceBase: Record<string, number> = { N: 1, kN: 1000 };
+const lengthBase: Record<string, number> = { mm: 0.001, cm: 0.01, m: 1 };
+
 function createDefaultModel(): ProjectModel {
   return {
     nodes: [],
@@ -354,14 +357,70 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   updateUnits: (updates) => {
     set((s) => {
-      const newUnits = { ...s.model.units, ...updates };
-      if (updates.force !== undefined || updates.length !== undefined) {
-        const f = updates.force ?? s.model.units.force;
-        const l = updates.length ?? s.model.units.length;
-        newUnits.moment = `${f}·${l}`;
+      const oldForce = s.model.units.force;
+      const oldLength = s.model.units.length;
+      const newForce = updates.force ?? oldForce;
+      const newLength = updates.length ?? oldLength;
+
+      // Conversion factors: old → new
+      const fF = (forceBase[oldForce] ?? 1) / (forceBase[newForce] ?? 1);
+      const fL = (lengthBase[oldLength] ?? 1) / (lengthBase[newLength] ?? 1);
+      const fL2 = fL * fL;
+      const fL4 = fL2 * fL2;
+
+      const newUnits = {
+        force: newForce,
+        length: newLength,
+        moment: `${newForce}·${newLength}`,
+      };
+
+      // Skip conversion if no actual change
+      if (fF === 1 && fL === 1) {
+        return { model: { ...s.model, units: newUnits }, isResultStale: true };
       }
+
+      const nodes = s.model.nodes.map((n) => ({
+        ...n,
+        x: n.x * fL,
+        y: n.y * fL,
+      }));
+
+      const materials = s.model.materials.map((m) => ({
+        ...m,
+        E: m.E * fF / fL2,
+      }));
+
+      const sections = s.model.sections.map((sec) => ({
+        ...sec,
+        A: sec.A * fL2,
+        I: sec.I * fL4,
+      }));
+
+      const nodalLoads = s.model.nodalLoads.map((l) => ({
+        ...l,
+        fx: l.fx * fF,
+        fy: l.fy * fF,
+        mz: l.mz * fF * fL,
+      }));
+
+      const memberLoads = s.model.memberLoads.map((l) => {
+        if (l.type === 'point') {
+          return { ...l, value: l.value * fF, a: l.a * fL };
+        }
+        // UDL: force per unit length
+        return { ...l, value: l.value * fF / fL };
+      }) as MemberLoad[];
+
       return {
-        model: { ...s.model, units: newUnits },
+        model: {
+          ...s.model,
+          nodes,
+          materials,
+          sections,
+          nodalLoads,
+          memberLoads,
+          units: newUnits,
+        },
         isResultStale: true,
       };
     });
