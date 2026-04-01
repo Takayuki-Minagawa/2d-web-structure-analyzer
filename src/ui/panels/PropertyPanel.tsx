@@ -72,6 +72,9 @@ export const PropertyPanel: React.FC = () => {
 
       {selectedNodes.length === 0 && selectedMembers.length === 0 && (
         <>
+          <UnitsEditor />
+          <MaterialsEditor />
+          <SectionsEditor />
           <div className="prop-group">
             <div className="prop-title">{t('prop.displaySettings')}</div>
             <label className="checkbox-label">
@@ -331,6 +334,142 @@ const MemberProperties: React.FC<{
       <div className="prop-actions">
         <button onClick={() => onAddLoad(member.id)}>{t('prop.addLoad')}</button>
         <button className="danger" onClick={() => onDelete(member.id)}>{t('prop.delete')}</button>
+      </div>
+    </div>
+  );
+};
+
+const UnitsEditor: React.FC = () => {
+  const model = useProjectStore((s) => s.model);
+  const updateUnits = useProjectStore((s) => s.updateUnits);
+  const t = useT();
+
+  return (
+    <div className="prop-group">
+      <div className="prop-title">{t('prop.units')}</div>
+      <div className="prop-row">
+        <label>{t('prop.forceUnit')}</label>
+        <select
+          value={model.units.force}
+          onChange={(e) => updateUnits({ force: e.target.value })}
+        >
+          <option value="N">N</option>
+          <option value="kN">kN</option>
+        </select>
+      </div>
+      <div className="prop-row">
+        <label>{t('prop.lengthUnit')}</label>
+        <select
+          value={model.units.length}
+          onChange={(e) => updateUnits({ length: e.target.value })}
+        >
+          <option value="mm">mm</option>
+          <option value="cm">cm</option>
+          <option value="m">m</option>
+        </select>
+      </div>
+    </div>
+  );
+};
+
+const MaterialsEditor: React.FC = () => {
+  const model = useProjectStore((s) => s.model);
+  const addMaterial = useProjectStore((s) => s.addMaterial);
+  const updateMaterial = useProjectStore((s) => s.updateMaterial);
+  const removeMaterial = useProjectStore((s) => s.removeMaterial);
+  const t = useT();
+
+  const inUseIds = new Set(model.members.map((m) => m.materialId));
+
+  return (
+    <div className="prop-group">
+      <div className="prop-title">{t('prop.materials')}</div>
+      {model.materials.map((mat) => (
+        <div key={mat.id} className="editable-item">
+          <div className="prop-row">
+            <label>{t('prop.matName')}</label>
+            <input
+              type="text"
+              value={mat.name}
+              onChange={(e) => updateMaterial(mat.id, { name: e.target.value })}
+            />
+          </div>
+          <div className="prop-row">
+            <label>{t('prop.matE')}</label>
+            <input
+              type="number"
+              value={mat.E}
+              step="1000"
+              onChange={(e) => updateMaterial(mat.id, { E: Number(e.target.value) })}
+            />
+          </div>
+          {!inUseIds.has(mat.id) && (
+            <button className="danger small" onClick={() => removeMaterial(mat.id)}>
+              {t('prop.removeMaterial')}
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="prop-actions">
+        <button onClick={() => addMaterial({ name: 'New', E: 205000 })}>
+          {t('prop.addMaterial')}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const SectionsEditor: React.FC = () => {
+  const model = useProjectStore((s) => s.model);
+  const addSection = useProjectStore((s) => s.addSection);
+  const updateSection = useProjectStore((s) => s.updateSection);
+  const removeSection = useProjectStore((s) => s.removeSection);
+  const t = useT();
+
+  const inUseIds = new Set(model.members.map((m) => m.sectionId));
+
+  return (
+    <div className="prop-group">
+      <div className="prop-title">{t('prop.sections')}</div>
+      {model.sections.map((sec) => (
+        <div key={sec.id} className="editable-item">
+          <div className="prop-row">
+            <label>{t('prop.secName')}</label>
+            <input
+              type="text"
+              value={sec.name}
+              onChange={(e) => updateSection(sec.id, { name: e.target.value })}
+            />
+          </div>
+          <div className="prop-row">
+            <label>{t('prop.secA')}</label>
+            <input
+              type="number"
+              value={sec.A}
+              step="0.001"
+              onChange={(e) => updateSection(sec.id, { A: Number(e.target.value) })}
+            />
+          </div>
+          <div className="prop-row">
+            <label>{t('prop.secI')}</label>
+            <input
+              type="number"
+              value={sec.I}
+              step="0.0001"
+              onChange={(e) => updateSection(sec.id, { I: Number(e.target.value) })}
+            />
+          </div>
+          {!inUseIds.has(sec.id) && (
+            <button className="danger small" onClick={() => removeSection(sec.id)}>
+              {t('prop.removeSection')}
+            </button>
+          )}
+        </div>
+      ))}
+      <div className="prop-actions">
+        <button onClick={() => addSection({ name: 'New', A: 0.01, I: 1e-4 })}>
+          {t('prop.addSection')}
+        </button>
       </div>
     </div>
   );

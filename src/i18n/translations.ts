@@ -118,6 +118,24 @@ const ja = {
   'help.signs.axial': '軸力: 正 = 引張',
   'help.signs.load': '荷重: 正方向 = 座標軸正方向',
   'help.signs.local': 'localX = i端→j端方向、localY = localXの90度反時計回り',
+
+  // Materials & Sections
+  'prop.materials': '材料',
+  'prop.matName': '名称:',
+  'prop.matE': 'E:',
+  'prop.addMaterial': '材料追加',
+  'prop.removeMaterial': '削除',
+  'prop.sections': '断面',
+  'prop.secName': '名称:',
+  'prop.secA': 'A:',
+  'prop.secI': 'I:',
+  'prop.addSection': '断面追加',
+  'prop.removeSection': '削除',
+
+  // Units
+  'prop.units': '単位設定',
+  'prop.forceUnit': '荷重:',
+  'prop.lengthUnit': '長さ:',
 } as const;
 
 const en: Record<keyof typeof ja, string> = {
@@ -228,6 +246,22 @@ const en: Record<keyof typeof ja, string> = {
   'help.signs.axial': 'Axial force: positive = tension',
   'help.signs.load': 'Load: positive direction = positive axis direction',
   'help.signs.local': 'localX = i-end to j-end, localY = 90 deg CCW from localX',
+
+  'prop.materials': 'Materials',
+  'prop.matName': 'Name:',
+  'prop.matE': 'E:',
+  'prop.addMaterial': 'Add Material',
+  'prop.removeMaterial': 'Remove',
+  'prop.sections': 'Sections',
+  'prop.secName': 'Name:',
+  'prop.secA': 'A:',
+  'prop.secI': 'I:',
+  'prop.addSection': 'Add Section',
+  'prop.removeSection': 'Remove',
+
+  'prop.units': 'Units',
+  'prop.forceUnit': 'Force:',
+  'prop.lengthUnit': 'Length:',
 };
 
 export type TKey = keyof typeof ja;

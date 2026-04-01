@@ -83,6 +83,9 @@ interface ProjectState {
   // Project
   loadModel: (model: ProjectModel) => void;
   resetModel: () => void;
+
+  // Units
+  updateUnits: (updates: Partial<ProjectModel['units']>) => void;
 }
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
@@ -345,4 +348,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     analysisError: null,
     isResultStale: false,
   }),
+
+  updateUnits: (updates) => {
+    set((s) => {
+      const newUnits = { ...s.model.units, ...updates };
+      if (updates.force !== undefined || updates.length !== undefined) {
+        const f = updates.force ?? s.model.units.force;
+        const l = updates.length ?? s.model.units.length;
+        newUnits.moment = `${f}·${l}`;
+      }
+      return {
+        model: { ...s.model, units: newUnits },
+        isResultStale: true,
+      };
+    });
+  },
 }));

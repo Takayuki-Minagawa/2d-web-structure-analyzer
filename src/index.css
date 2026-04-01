@@ -231,6 +231,7 @@ html, body, #root {
 }
 
 .prop-row input[type="number"],
+.prop-row input[type="text"],
 .prop-row select {
   flex: 1;
   padding: 3px 6px;
@@ -388,6 +389,32 @@ input[type="range"] {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+
+/* Editable items (materials / sections) */
+.editable-item {
+  padding: 6px;
+  margin-bottom: 6px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.editable-item button.danger.small {
+  width: 100%;
+  padding: 3px 6px;
+  margin-top: 4px;
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.editable-item button.danger.small:hover {
+  background: var(--danger);
+  color: var(--bg-overlay);
 }
 
 .load-item button.danger.small {
