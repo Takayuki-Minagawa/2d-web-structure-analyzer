@@ -4,7 +4,6 @@ import { useSelectionStore } from '../../state/selectionStore';
 import { useViewStore } from '../../state/viewStore';
 import { useT } from '../../i18n';
 import type { StructuralNode, Member, NodalLoad, MemberLoad } from '../../core/model/types';
-import type { TKey } from '../../i18n';
 
 export const PropertyPanel: React.FC = () => {
   const model = useProjectStore((s) => s.model);
@@ -320,7 +319,7 @@ const MemberProperties: React.FC<{
                     step="0.1"
                     min="0"
                     max={L}
-                    onChange={(e) => onUpdateLoad(load.id, { a: Number(e.target.value) })}
+                    onChange={(e) => onUpdateLoad(load.id, { a: Number(e.target.value) } as Partial<Omit<MemberLoad, 'id'>>)}
                   />
                 </div>
               )}
