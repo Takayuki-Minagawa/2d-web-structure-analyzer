@@ -631,7 +631,9 @@ export class CanvasRenderer {
       let minPt: { sx: number; sy: number; val: number } | null = null;
 
       for (const pt of diagram.points) {
-        const value = mode === 'axial' ? pt.N : mode === 'shear' ? pt.V : pt.M;
+        const raw = mode === 'axial' ? pt.N : mode === 'shear' ? pt.V : pt.M;
+        // Flip moment sign so positive M (sagging) plots on tension side (below beam)
+        const value = mode === 'moment' ? -raw : raw;
 
         const xi = pt.x / L;
         const baseX = ni.x + dx * xi;
@@ -641,13 +643,13 @@ export class CanvasRenderer {
         const [sx, sy] = this.modelToScreen(offsetX, offsetY);
         ctx.lineTo(sx, sy);
 
-        if (value > maxVal) {
-          maxVal = value;
-          maxPt = { sx, sy, val: value };
+        if (raw > maxVal) {
+          maxVal = raw;
+          maxPt = { sx, sy, val: raw };
         }
-        if (value < minVal) {
-          minVal = value;
-          minPt = { sx, sy, val: value };
+        if (raw < minVal) {
+          minVal = raw;
+          minPt = { sx, sy, val: raw };
         }
       }
 
@@ -663,10 +665,12 @@ export class CanvasRenderer {
       ctx.beginPath();
       ctx.moveTo(sx0, sy0);
       for (const pt of diagram.points) {
-        let value: number;
-        if (mode === 'axial') value = pt.N;
-        else if (mode === 'shear') value = pt.V;
-        else value = pt.M;
+        let raw: number;
+        if (mode === 'axial') raw = pt.N;
+        else if (mode === 'shear') raw = pt.V;
+        else raw = pt.M;
+        // Flip moment sign so positive M (sagging) plots on tension side
+        const value = mode === 'moment' ? -raw : raw;
 
         const xi = pt.x / L;
         const baseX = ni.x + dx * xi;
