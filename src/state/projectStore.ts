@@ -62,6 +62,8 @@ interface ProjectState {
   analysisError: AnalysisError | null;
   isAnalyzing: boolean;
   isResultStale: boolean;
+  /** Incremented when a full model load occurs and the view should fit to new content. */
+  fitViewVersion: number;
 
   // Node operations
   addNode: (x: number, y: number, z: number) => string;
@@ -117,6 +119,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   analysisError: null,
   isAnalyzing: false,
   isResultStale: false,
+  fitViewVersion: 0,
 
   addNode: (x, y, z) => {
     const id = generateId();
@@ -396,22 +399,24 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   markResultStale: () => set({ isResultStale: true }),
 
-  loadModel: (model) => set({
+  loadModel: (model) => set((s) => ({
     model,
     analysisResult: null,
     analysisError: null,
     isResultStale: false,
-  }),
+    fitViewVersion: s.fitViewVersion + 1,
+  })),
 
   importFrameJson: (text, loadCaseIndex) => {
     const doc = parseFrameJsonText(text);
     const model = convertFrameJson(doc, loadCaseIndex);
-    set({
+    set((s) => ({
       model,
       analysisResult: null,
       analysisError: null,
       isResultStale: false,
-    });
+      fitViewVersion: s.fitViewVersion + 1,
+    }));
   },
 
   importJsonAuto: (text) => {
@@ -423,37 +428,38 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
 
     if (isFrameJsonFormat(parsed)) {
-      // FrameJsonDocument format
       const doc = parseFrameJsonText(text);
       const model = convertFrameJson(doc);
-      set({
+      set((s) => ({
         model,
         analysisResult: null,
         analysisError: null,
         isResultStale: false,
-      });
+        fitViewVersion: s.fitViewVersion + 1,
+      }));
     } else {
-      // Try legacy ProjectFile format
       const pf = parsed as { model?: ProjectModel };
       if (pf.model) {
-        set({
-          model: pf.model,
+        set((s) => ({
+          model: pf.model!,
           analysisResult: null,
           analysisError: null,
           isResultStale: false,
-        });
+          fitViewVersion: s.fitViewVersion + 1,
+        }));
       } else {
         throw new Error('Unrecognized JSON format');
       }
     }
   },
 
-  resetModel: () => set({
+  resetModel: () => set((s) => ({
     model: createDefaultModel(),
     analysisResult: null,
     analysisError: null,
     isResultStale: false,
-  }),
+    fitViewVersion: s.fitViewVersion + 1,
+  })),
 
   updateUnits: (updates) => {
     set((s) => ({

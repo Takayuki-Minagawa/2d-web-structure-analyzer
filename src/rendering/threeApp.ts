@@ -52,7 +52,10 @@ export type EditAction =
   | { kind: 'addMember'; ni: string; nj: string }
   | { kind: 'setSupport'; nodeId: string }
   | { kind: 'addNodalLoad'; nodeId: string }
-  | { kind: 'addMemberLoad'; memberId: string };
+  | { kind: 'addMemberLoad'; memberId: string }
+  | { kind: 'moveNode'; nodeId: string; x: number; y: number; z: number }
+  | { kind: 'deleteSelected' }
+  | { kind: 'cancelOperation' };
 
 export class ThreeApp {
   private scene: THREE.Scene;
@@ -73,6 +76,8 @@ export class ThreeApp {
   private animationId = 0;
   private onResizeBound: () => void;
   private pointerDownPos: { x: number; y: number } | null = null;
+  private draggingNodeId: string | null = null;
+  private isDragging = false;
 
   private model: ProjectModel | null = null;
   private result: AnalysisResult | null = null;
@@ -87,7 +92,7 @@ export class ThreeApp {
   private editTool: EditTool = 'select';
   private pendingMemberStart: string | null = null;
 
-  onSelectionChanged: ((sel: ViewerSelection) => void) | null = null;
+  onSelectionChanged: ((sel: ViewerSelection, multi: boolean) => void) | null = null;
   onEditAction: ((action: EditAction) => void) | null = null;
 
   constructor(container: HTMLElement) {
@@ -129,7 +134,9 @@ export class ThreeApp {
     this.onResizeBound = () => this.onResize();
     window.addEventListener('resize', this.onResizeBound);
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointermove', this.onPointerMove);
     window.addEventListener('pointerup', this.onPointerUp);
+    window.addEventListener('keydown', this.onKeyDown);
 
     this.animate();
   }
@@ -176,7 +183,10 @@ export class ThreeApp {
 
   setModel(model: ProjectModel): void {
     this.model = model;
-    this.rebuild();
+    this.rebuildNodes();
+    this.rebuildMembers();
+    this.rebuildSupports();
+    this.rebuildResults();
   }
 
   setResult(result: AnalysisResult | null): void {
@@ -235,14 +245,6 @@ export class ThreeApp {
     this.camera.position.set(cx + maxDim, cy - maxDim * 1.2, cz + maxDim * 0.8);
     this.camera.updateProjectionMatrix();
     this.controls.update();
-  }
-
-  private rebuild(): void {
-    this.rebuildNodes();
-    this.rebuildMembers();
-    this.rebuildSupports();
-    this.rebuildResults();
-    this.fitToView();
   }
 
   private clearGroup(group: THREE.Group): void {
@@ -519,22 +521,60 @@ export class ThreeApp {
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return;
     this.pointerDownPos = { x: e.clientX, y: e.clientY };
+    this.isDragging = false;
+
+    // Start drag if select tool and a node is under the pointer
+    if (this.editTool === 'select' && this.model) {
+      const rect = this.renderer.domElement.getBoundingClientRect();
+      const hit = this.pickNode(e.clientX - rect.left, e.clientY - rect.top);
+      if (hit) this.draggingNodeId = hit.nodeId;
+    }
+  };
+
+  private onPointerMove = (e: PointerEvent): void => {
+    if (!this.pointerDownPos || !this.draggingNodeId) return;
+    const dx = e.clientX - this.pointerDownPos.x;
+    const dy = e.clientY - this.pointerDownPos.y;
+    if (!this.isDragging && dx * dx + dy * dy > CLICK_DRAG_THRESHOLD * CLICK_DRAG_THRESHOLD) {
+      this.isDragging = true;
+      this.controls.enabled = false; // disable orbit while dragging node
+    }
+    if (!this.isDragging) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const pos = this.screenToGroundPlane(e.clientX - rect.left, e.clientY - rect.top);
+    if (pos) {
+      this.onEditAction?.({ kind: 'moveNode', nodeId: this.draggingNodeId, x: pos.x, y: pos.y, z: pos.z });
+    }
   };
 
   private onPointerUp = (e: PointerEvent): void => {
     if (e.button !== 0 || !this.pointerDownPos) return;
-    const dx = e.clientX - this.pointerDownPos.x;
-    const dy = e.clientY - this.pointerDownPos.y;
+
+    const wasDragging = this.isDragging;
     this.pointerDownPos = null;
-    if (dx * dx + dy * dy > CLICK_DRAG_THRESHOLD * CLICK_DRAG_THRESHOLD) return;
+    this.draggingNodeId = null;
+    this.isDragging = false;
+    this.controls.enabled = true;
+
+    if (wasDragging) return; // drag completed, don't fire click
 
     const rect = this.renderer.domElement.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    this.handleClick(x, y);
+    this.handleClick(x, y, e.shiftKey);
   };
 
-  private handleClick(x: number, y: number): void {
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      this.onEditAction?.({ kind: 'deleteSelected' });
+    } else if (e.key === 'Escape') {
+      this.pendingMemberStart = null;
+      this.onEditAction?.({ kind: 'cancelOperation' });
+    }
+  };
+
+  private handleClick(x: number, y: number, shift = false): void {
     if (!this.model) return;
 
     switch (this.editTool) {
@@ -549,11 +589,11 @@ export class ThreeApp {
       case 'addMemberLoad':
         return this.handleAddMemberLoad(x, y);
       default:
-        return this.handleSelect(x, y);
+        return this.handleSelect(x, y, shift);
     }
   }
 
-  private handleSelect(x: number, y: number): void {
+  private handleSelect(x: number, y: number, multi = false): void {
     const nodeHit = this.pickNode(x, y);
     const memberHit = this.pickMember(x, y);
 
@@ -563,25 +603,27 @@ export class ThreeApp {
       const sel = ns <= ms
         ? { kind: 'node' as const, nodeId: nodeHit.nodeId }
         : { kind: 'member' as const, memberId: memberHit.memberId };
-      this.setSelection(sel);
-      this.onSelectionChanged?.(sel);
+      if (!multi) this.setSelection(sel);
+      this.onSelectionChanged?.(sel, multi);
       return;
     }
     if (nodeHit) {
       const sel = { kind: 'node' as const, nodeId: nodeHit.nodeId };
-      this.setSelection(sel);
-      this.onSelectionChanged?.(sel);
+      if (!multi) this.setSelection(sel);
+      this.onSelectionChanged?.(sel, multi);
       return;
     }
     if (memberHit) {
       const sel = { kind: 'member' as const, memberId: memberHit.memberId };
-      this.setSelection(sel);
-      this.onSelectionChanged?.(sel);
+      if (!multi) this.setSelection(sel);
+      this.onSelectionChanged?.(sel, multi);
       return;
     }
-    const sel: ViewerSelection = { kind: 'none' };
-    this.setSelection(sel);
-    this.onSelectionChanged?.(sel);
+    if (!multi) {
+      const sel: ViewerSelection = { kind: 'none' };
+      this.setSelection(sel);
+      this.onSelectionChanged?.(sel, false);
+    }
   }
 
   /** Raycast from screen (x,y) to the Z=0 ground plane, returning world coords. */
@@ -611,7 +653,7 @@ export class ThreeApp {
     if (!this.pendingMemberStart) {
       this.pendingMemberStart = nodeHit.nodeId;
       this.setSelection({ kind: 'node', nodeId: nodeHit.nodeId });
-      this.onSelectionChanged?.({ kind: 'node', nodeId: nodeHit.nodeId });
+      this.onSelectionChanged?.({ kind: 'node', nodeId: nodeHit.nodeId }, false);
     } else {
       if (nodeHit.nodeId !== this.pendingMemberStart) {
         this.onEditAction?.({ kind: 'addMember', ni: this.pendingMemberStart, nj: nodeHit.nodeId });
@@ -686,7 +728,9 @@ export class ThreeApp {
     cancelAnimationFrame(this.animationId);
     window.removeEventListener('resize', this.onResizeBound);
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove);
     window.removeEventListener('pointerup', this.onPointerUp);
+    window.removeEventListener('keydown', this.onKeyDown);
     this.clearGroup(this.nodeGroup);
     this.clearGroup(this.memberGroup);
     this.clearGroup(this.resultGroup);

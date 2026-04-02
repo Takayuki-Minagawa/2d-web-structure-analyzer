@@ -14,9 +14,12 @@ export const CanvasPanel: React.FC = () => {
 
   const model = useProjectStore((s) => s.model);
   const analysisResult = useProjectStore((s) => s.analysisResult);
+  const fitViewVersion = useProjectStore((s) => s.fitViewVersion);
   const addNode = useProjectStore((s) => s.addNode);
   const addMember = useProjectStore((s) => s.addMember);
   const updateNode = useProjectStore((s) => s.updateNode);
+  const removeNode = useProjectStore((s) => s.removeNode);
+  const removeMember = useProjectStore((s) => s.removeMember);
   const addNodalLoad = useProjectStore((s) => s.addNodalLoad);
   const addMemberLoad = useProjectStore((s) => s.addMemberLoad);
 
@@ -60,8 +63,22 @@ export const CanvasPanel: React.FC = () => {
         addMemberLoad({ memberId: action.memberId, type: 'udl', direction: 'localY', value: -5 });
         selectMember(action.memberId);
         break;
+      case 'moveNode':
+        updateNode(action.nodeId, { x: action.x, y: action.y, z: action.z });
+        break;
+      case 'deleteSelected': {
+        const nodeIds = useSelectionStore.getState().selectedNodeIds;
+        const memberIds = useSelectionStore.getState().selectedMemberIds;
+        for (const id of memberIds) removeMember(id);
+        for (const id of nodeIds) removeNode(id);
+        clearSelection();
+        break;
+      }
+      case 'cancelOperation':
+        clearSelection();
+        break;
     }
-  }, [addNode, addMember, updateNode, addNodalLoad, addMemberLoad, selectNode, selectMember]);
+  }, [addNode, addMember, updateNode, removeNode, removeMember, addNodalLoad, addMemberLoad, selectNode, selectMember, clearSelection]);
 
   // Initialize Three.js app
   useEffect(() => {
@@ -71,9 +88,9 @@ export const CanvasPanel: React.FC = () => {
     const app = new ThreeApp(container);
     appRef.current = app;
 
-    app.onSelectionChanged = (sel) => {
-      if (sel.kind === 'node') selectNode(sel.nodeId);
-      else if (sel.kind === 'member') selectMember(sel.memberId);
+    app.onSelectionChanged = (sel, multi) => {
+      if (sel.kind === 'node') selectNode(sel.nodeId, multi);
+      else if (sel.kind === 'member') selectMember(sel.memberId, multi);
       else clearSelection();
     };
 
@@ -100,6 +117,15 @@ export const CanvasPanel: React.FC = () => {
   useEffect(() => {
     appRef.current?.setModel(model);
   }, [model]);
+
+  // Fit to view when a whole-model load occurs (import, sample, reset)
+  const prevFitVersion = useRef(fitViewVersion);
+  useEffect(() => {
+    if (fitViewVersion !== prevFitVersion.current) {
+      prevFitVersion.current = fitViewVersion;
+      appRef.current?.fitToView();
+    }
+  }, [fitViewVersion]);
 
   // Update results
   useEffect(() => {
