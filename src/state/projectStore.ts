@@ -7,125 +7,44 @@ import type {
   Section,
   NodalLoad,
   MemberLoad,
+  CouplingConstraint,
   DiagramPoint,
   AnalysisError,
+  Restraint,
 } from '../core/model/types';
 import type { WorkerResponse } from '../worker/protocol';
+import { parseFrameJsonText, isFrameJsonFormat } from '../io/frameJsonParser';
+import { convertFrameJson } from '../io/frameJsonConverter';
+
+/** Distributive Omit that works correctly with union types */
+type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 9);
 }
 
-const forceBase: Record<string, number> = { N: 1, kN: 1000 };
-const lengthBase: Record<string, number> = { mm: 0.001, cm: 0.01, m: 1 };
-const DEFAULT_POISSON_RATIO = 0.3;
-const EPSILON = 1e-10;
-
-function memberOrderKey(node: Pick<StructuralNode, 'x' | 'y'>): [number, number, number] {
-  return [node.x * node.x + node.y * node.y, node.x, node.y];
-}
-
-function shouldSwapMemberEnds(
-  nodeI: Pick<StructuralNode, 'x' | 'y'>,
-  nodeJ: Pick<StructuralNode, 'x' | 'y'>
-): boolean {
-  const iKey = memberOrderKey(nodeI);
-  const jKey = memberOrderKey(nodeJ);
-
-  for (let index = 0; index < iKey.length; index++) {
-    const delta = iKey[index]! - jKey[index]!;
-    if (Math.abs(delta) > EPSILON) return delta > 0;
-  }
-
-  return false;
-}
-
-function normalizeMembersAndLoads(
-  nodes: StructuralNode[],
-  members: Member[],
-  memberLoads: MemberLoad[]
-): Pick<ProjectModel, 'members' | 'memberLoads'> {
-  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
-  const reversedMembers = new Map<string, number>();
-
-  const normalizedMembers = members.map((member) => {
-    const nodeI = nodeMap.get(member.ni);
-    const nodeJ = nodeMap.get(member.nj);
-    if (!nodeI || !nodeJ) return member;
-    if (!shouldSwapMemberEnds(nodeI, nodeJ)) return member;
-
-    const dx = nodeJ.x - nodeI.x;
-    const dy = nodeJ.y - nodeI.y;
-    reversedMembers.set(member.id, Math.sqrt(dx * dx + dy * dy));
-
-    return {
-      ...member,
-      ni: member.nj,
-      nj: member.ni,
-    };
-  });
-
-  if (reversedMembers.size === 0) {
-    return { members: normalizedMembers, memberLoads };
-  }
-
-  const normalizedLoads = memberLoads.map((load) => {
-    const length = reversedMembers.get(load.memberId);
-    if (length === undefined) return load;
-
-    if (load.type === 'point') {
-      return {
-        ...load,
-        value: -load.value,
-        a: Math.max(0, Math.min(length, length - load.a)),
-      };
-    }
-
-    return {
-      ...load,
-      value: -load.value,
-    };
-  });
-
-  return { members: normalizedMembers, memberLoads: normalizedLoads };
-}
-
-function normalizeModel(model: ProjectModel): ProjectModel {
-  const { members, memberLoads } = normalizeMembersAndLoads(
-    model.nodes,
-    model.members,
-    model.memberLoads
-  );
-
-  return {
-    ...model,
-    materials: model.materials.map((mat) => ({
-      ...mat,
-      nu: mat.nu ?? DEFAULT_POISSON_RATIO,
-    })),
-    sections: model.sections.map((sec) => ({
-      ...sec,
-      As: sec.As ?? sec.A,
-    })),
-    members,
-    memberLoads,
-    units: model.units ?? { force: 'kN', length: 'm', moment: 'kN·m' },
-  };
-}
+const DEFAULT_RESTRAINT: Restraint = {
+  ux: false, uy: false, uz: false,
+  rx: false, ry: false, rz: false,
+};
 
 function createDefaultModel(): ProjectModel {
+  const matId = generateId();
   return {
+    title: '',
     nodes: [],
     materials: [
-      { id: generateId(), name: 'Steel', E: 205000, nu: DEFAULT_POISSON_RATIO },
+      { id: matId, name: 'Steel', E: 20500, G: 7900, nu: 0.3, expansion: 0.000012 },
     ],
     sections: [
-      { id: generateId(), name: 'Default', A: 0.01, I: 1e-4, As: 0.005 },
+      { id: generateId(), name: 'Default', materialId: matId, A: 100, Ix: 1000, Iy: 500, Iz: 500, ky: 0, kz: 0 },
     ],
+    springs: [],
     members: [],
+    couplings: [],
     nodalLoads: [],
     memberLoads: [],
-    units: { force: 'kN', length: 'm', moment: 'kN·m' },
+    units: { force: 'kN', length: 'cm', moment: 'kN·cm' },
   };
 }
 
@@ -143,15 +62,17 @@ interface ProjectState {
   analysisError: AnalysisError | null;
   isAnalyzing: boolean;
   isResultStale: boolean;
+  /** Incremented when a full model load occurs and the view should fit to new content. */
+  fitViewVersion: number;
 
   // Node operations
-  addNode: (x: number, y: number) => string;
-  updateNode: (id: string, updates: Partial<Pick<StructuralNode, 'x' | 'y' | 'restraint'>>) => void;
+  addNode: (x: number, y: number, z: number) => string;
+  updateNode: (id: string, updates: Partial<Pick<StructuralNode, 'x' | 'y' | 'z' | 'restraint'>>) => void;
   removeNode: (id: string) => void;
 
   // Member operations
   addMember: (ni: string, nj: string) => string;
-  updateMember: (id: string, updates: Partial<Pick<Member, 'materialId' | 'sectionId'>>) => void;
+  updateMember: (id: string, updates: Partial<Pick<Member, 'sectionId' | 'codeAngle'>>) => void;
   removeMember: (id: string) => void;
 
   // Material operations
@@ -168,9 +89,14 @@ interface ProjectState {
   addNodalLoad: (load: Omit<NodalLoad, 'id'>) => string;
   updateNodalLoad: (id: string, updates: Partial<Omit<NodalLoad, 'id'>>) => void;
   removeNodalLoad: (id: string) => void;
-  addMemberLoad: (load: Omit<MemberLoad, 'id'>) => string;
-  updateMemberLoad: (id: string, updates: Partial<Omit<MemberLoad, 'id'>>) => void;
+  addMemberLoad: (load: DistributiveOmit<MemberLoad, 'id'>) => string;
+  updateMemberLoad: (id: string, updates: Partial<DistributiveOmit<MemberLoad, 'id'>>) => void;
   removeMemberLoad: (id: string) => void;
+
+  // Coupling operations
+  addCoupling: (c: Omit<CouplingConstraint, 'id'>) => string;
+  updateCoupling: (id: string, updates: Partial<Omit<CouplingConstraint, 'id'>>) => void;
+  removeCoupling: (id: string) => void;
 
   // Analysis
   setAnalyzing: (v: boolean) => void;
@@ -179,6 +105,8 @@ interface ProjectState {
 
   // Project
   loadModel: (model: ProjectModel) => void;
+  importFrameJson: (text: string, loadCaseIndex?: number) => void;
+  importJsonAuto: (text: string) => void;
   resetModel: () => void;
 
   // Units
@@ -191,13 +119,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   analysisError: null,
   isAnalyzing: false,
   isResultStale: false,
+  fitViewVersion: 0,
 
-  addNode: (x, y) => {
+  addNode: (x, y, z) => {
     const id = generateId();
     set((s) => ({
       model: {
         ...s.model,
-        nodes: [...s.model.nodes, { id, x, y, restraint: { ux: false, uy: false, rz: false } }],
+        nodes: [...s.model.nodes, { id, x, y, z, restraint: { ...DEFAULT_RESTRAINT } }],
       },
       isResultStale: true,
     }));
@@ -205,26 +134,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   updateNode: (id, updates) => {
-    set((s) => {
-      const nodes = s.model.nodes.map((n) =>
-        n.id === id ? { ...n, ...updates } : n
-      );
-      const { members, memberLoads } = normalizeMembersAndLoads(
-        nodes,
-        s.model.members,
-        s.model.memberLoads
-      );
-
-      return {
-        model: {
-          ...s.model,
-          nodes,
-          members,
-          memberLoads,
-        },
-        isResultStale: true,
-      };
-    });
+    set((s) => ({
+      model: {
+        ...s.model,
+        nodes: s.model.nodes.map((n) =>
+          n.id === id ? { ...n, ...updates } : n
+        ),
+      },
+      isResultStale: true,
+    }));
   },
 
   removeNode: (id) => {
@@ -239,6 +157,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           members: s.model.members.filter((m) => m.ni !== id && m.nj !== id),
           nodalLoads: s.model.nodalLoads.filter((l) => l.nodeId !== id),
           memberLoads: s.model.memberLoads.filter((l) => !removedMemberIds.has(l.memberId)),
+          couplings: s.model.couplings.filter((c) => c.masterNodeId !== id && c.slaveNodeId !== id),
         },
         isResultStale: true,
       };
@@ -247,25 +166,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   addMember: (ni, nj) => {
     const id = generateId();
-    const { materials, sections } = get().model;
-    const materialId = materials[0]?.id ?? '';
+    const { sections } = get().model;
     const sectionId = sections[0]?.id ?? '';
-    set((s) => {
-      const { members, memberLoads } = normalizeMembersAndLoads(
-        s.model.nodes,
-        [...s.model.members, { id, ni, nj, materialId, sectionId }],
-        s.model.memberLoads
-      );
-
-      return {
-        model: {
-          ...s.model,
-          members,
-          memberLoads,
-        },
-        isResultStale: true,
-      };
-    });
+    set((s) => ({
+      model: {
+        ...s.model,
+        members: [...s.model.members, {
+          id, ni, nj, sectionId,
+          codeAngle: 0,
+          iSprings: { x: 0, y: 0, z: 0 },
+          jSprings: { x: 0, y: 0, z: 0 },
+        }],
+      },
+      isResultStale: true,
+    }));
     return id;
   },
 
@@ -424,6 +338,40 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }));
   },
 
+  addCoupling: (c) => {
+    const id = generateId();
+    set((s) => ({
+      model: {
+        ...s.model,
+        couplings: [...(s.model.couplings ?? []), { ...c, id }],
+      },
+      isResultStale: true,
+    }));
+    return id;
+  },
+
+  updateCoupling: (id, updates) => {
+    set((s) => ({
+      model: {
+        ...s.model,
+        couplings: (s.model.couplings ?? []).map((c) =>
+          c.id === id ? { ...c, ...updates } : c
+        ),
+      },
+      isResultStale: true,
+    }));
+  },
+
+  removeCoupling: (id) => {
+    set((s) => ({
+      model: {
+        ...s.model,
+        couplings: (s.model.couplings ?? []).filter((c) => c.id !== id),
+      },
+      isResultStale: true,
+    }));
+  },
+
   setAnalyzing: (v) => set({ isAnalyzing: v }),
 
   setAnalysisResult: (resp) => {
@@ -452,89 +400,75 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   markResultStale: () => set({ isResultStale: true }),
 
-  loadModel: (model) => set({
-    model: normalizeModel(model),
+  loadModel: (model) => set((s) => ({
+    model,
     analysisResult: null,
     analysisError: null,
     isResultStale: false,
-  }),
+    fitViewVersion: s.fitViewVersion + 1,
+  })),
 
-  resetModel: () => set({
+  importFrameJson: (text, loadCaseIndex) => {
+    const doc = parseFrameJsonText(text);
+    const model = convertFrameJson(doc, loadCaseIndex);
+    set((s) => ({
+      model,
+      analysisResult: null,
+      analysisError: null,
+      isResultStale: false,
+      fitViewVersion: s.fitViewVersion + 1,
+    }));
+  },
+
+  importJsonAuto: (text) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error('Invalid JSON');
+    }
+
+    if (isFrameJsonFormat(parsed)) {
+      const doc = parseFrameJsonText(text);
+      const model = convertFrameJson(doc);
+      set((s) => ({
+        model,
+        analysisResult: null,
+        analysisError: null,
+        isResultStale: false,
+        fitViewVersion: s.fitViewVersion + 1,
+      }));
+    } else {
+      const pf = parsed as { model?: ProjectModel };
+      if (pf.model) {
+        set((s) => ({
+          model: pf.model!,
+          analysisResult: null,
+          analysisError: null,
+          isResultStale: false,
+          fitViewVersion: s.fitViewVersion + 1,
+        }));
+      } else {
+        throw new Error('Unrecognized JSON format');
+      }
+    }
+  },
+
+  resetModel: () => set((s) => ({
     model: createDefaultModel(),
     analysisResult: null,
     analysisError: null,
     isResultStale: false,
-  }),
+    fitViewVersion: s.fitViewVersion + 1,
+  })),
 
   updateUnits: (updates) => {
-    set((s) => {
-      const oldForce = s.model.units.force;
-      const oldLength = s.model.units.length;
-      const newForce = updates.force ?? oldForce;
-      const newLength = updates.length ?? oldLength;
-
-      // Conversion factors: old → new
-      const fF = (forceBase[oldForce] ?? 1) / (forceBase[newForce] ?? 1);
-      const fL = (lengthBase[oldLength] ?? 1) / (lengthBase[newLength] ?? 1);
-      const fL2 = fL * fL;
-      const fL4 = fL2 * fL2;
-
-      const newUnits = {
-        force: newForce,
-        length: newLength,
-        moment: `${newForce}·${newLength}`,
-      };
-
-      // Skip conversion if no actual change
-      if (fF === 1 && fL === 1) {
-        return { model: { ...s.model, units: newUnits }, isResultStale: true };
-      }
-
-      const nodes = s.model.nodes.map((n) => ({
-        ...n,
-        x: n.x * fL,
-        y: n.y * fL,
-      }));
-
-      const materials = s.model.materials.map((m) => ({
-        ...m,
-        E: m.E * fF / fL2,
-      }));
-
-      const sections = s.model.sections.map((sec) => ({
-        ...sec,
-        A: sec.A * fL2,
-        I: sec.I * fL4,
-        As: (sec.As ?? sec.A) * fL2,
-      }));
-
-      const nodalLoads = s.model.nodalLoads.map((l) => ({
-        ...l,
-        fx: l.fx * fF,
-        fy: l.fy * fF,
-        mz: l.mz * fF * fL,
-      }));
-
-      const memberLoads = s.model.memberLoads.map((l) => {
-        if (l.type === 'point') {
-          return { ...l, value: l.value * fF, a: l.a * fL };
-        }
-        // UDL: force per unit length
-        return { ...l, value: l.value * fF / fL };
-      }) as MemberLoad[];
-
-      return {
-        model: {
-          ...s.model,
-          nodes,
-          materials,
-          sections,
-          nodalLoads,
-          memberLoads,
-          units: newUnits,
-        },
-        isResultStale: true,
-      };
-    });
+    set((s) => ({
+      model: {
+        ...s.model,
+        units: { ...s.model.units, ...updates },
+      },
+      isResultStale: true,
+    }));
   },
 }));

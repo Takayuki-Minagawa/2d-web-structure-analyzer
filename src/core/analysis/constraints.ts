@@ -2,33 +2,46 @@ import type { IndexedModel } from '../model/types';
 
 /**
  * Identify free (unconstrained) and fixed (constrained) DOF indices.
+ * DOF order per node: [ux, uy, uz, rx, ry, rz]
+ *
+ * Slave DOFs (coupled to a master) are excluded from both lists since
+ * their contributions are already redirected to the master DOF during assembly.
  */
 export function partitionDofs(model: IndexedModel): {
   freeDofs: number[];
   fixedDofs: number[];
 } {
-  const freeDofs: number[] = [];
-  const fixedDofs: number[] = [];
+  const { dofMap } = model;
+
+  // Collect fixity for each DOF from node restraints
+  const isFixed = new Uint8Array(model.dofCount);
 
   for (const node of model.nodes) {
-    const base = node.index * 3;
-
-    if (node.restraint.ux) {
-      fixedDofs.push(base);
-    } else {
-      freeDofs.push(base);
+    const base = node.index * 6;
+    const r = node.restraint;
+    const flags = [r.ux, r.uy, r.uz, r.rx, r.ry, r.rz];
+    for (let i = 0; i < 6; i++) {
+      if (flags[i]) isFixed[base + i] = 1;
     }
+  }
 
-    if (node.restraint.uy) {
-      fixedDofs.push(base + 1);
-    } else {
-      freeDofs.push(base + 1);
+  // Propagate slave fixity to master DOFs:
+  // if a slave DOF is fixed, the master DOF must also be fixed.
+  for (let dof = 0; dof < model.dofCount; dof++) {
+    if (dofMap[dof] !== dof && isFixed[dof]) {
+      isFixed[dofMap[dof]!] = 1;
     }
+  }
 
-    if (node.restraint.rz) {
-      fixedDofs.push(base + 2);
+  // Partition master DOFs into free/fixed (skip slaves)
+  const freeDofs: number[] = [];
+  const fixedDofs: number[] = [];
+  for (let dof = 0; dof < model.dofCount; dof++) {
+    if (dofMap[dof] !== dof) continue; // slave
+    if (isFixed[dof]) {
+      fixedDofs.push(dof);
     } else {
-      freeDofs.push(base + 2);
+      freeDofs.push(dof);
     }
   }
 

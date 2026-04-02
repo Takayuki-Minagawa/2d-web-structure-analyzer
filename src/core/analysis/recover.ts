@@ -1,8 +1,10 @@
 import type { IndexedModel, IndexedMember, MemberLoad } from '../model/types';
-import { buildLocalStiffness } from './element2dFrame';
+import { buildLocalStiffness, applyEndReleases, applyEndReleasesToForce } from './element3dFrame';
 import { buildTransformationMatrix, transformVectorToLocal } from './transforms';
 import { computeMemberLoadFixedEndForces } from './loads';
 import { getMemberDofs } from './assembly';
+
+const MEMBER_DOF = 12;
 
 /**
  * Compute reactions: R = K_full * d - F_full
@@ -31,7 +33,8 @@ export function computeReactions(
  * Compute element end forces in local coordinates for a single member.
  * q_end_local = k_local * d_local - f_member_load_local
  *
- * Sign convention: positive axial = tension
+ * Returns 12-element Float64Array:
+ * [Nxi, Vyi, Vzi, Mxi, Myi, Mzi, Nxj, Vyj, Vzj, Mxj, Myj, Mzj]
  */
 export function computeElementEndForces(
   member: IndexedMember,
@@ -41,37 +44,47 @@ export function computeElementEndForces(
   const kLocal = buildLocalStiffness(member);
   const T = buildTransformationMatrix(member);
 
+  // Apply end-release condensation (same as assembly phase)
+  const hasRelease = member.releases.some(r => r.type !== 'rigid');
+  if (hasRelease) {
+    applyEndReleases(kLocal, member.releases);
+  }
+
   // Extract element global displacements
   const dofs = getMemberDofs(member.ni, member.nj);
-  const dGlobal = new Float64Array(6);
-  for (let i = 0; i < 6; i++) {
+  const dGlobal = new Float64Array(MEMBER_DOF);
+  for (let i = 0; i < MEMBER_DOF; i++) {
     dGlobal[i] = globalDisplacements[dofs[i]!]!;
   }
 
   // Transform to local
   const dLocal = transformVectorToLocal(dGlobal, T);
 
-  // k_local * d_local
-  const kd = new Float64Array(6);
-  for (let i = 0; i < 6; i++) {
+  // k_condensed * d_local
+  const kd = new Float64Array(MEMBER_DOF);
+  for (let i = 0; i < MEMBER_DOF; i++) {
     let sum = 0;
-    for (let j = 0; j < 6; j++) {
-      sum += kLocal[i * 6 + j]! * dLocal[j]!;
+    for (let j = 0; j < MEMBER_DOF; j++) {
+      sum += kLocal[i * MEMBER_DOF + j]! * dLocal[j]!;
     }
     kd[i] = sum;
   }
 
-  // Subtract fixed-end forces from member loads
-  const fMemberLocal = new Float64Array(6);
+  // Subtract fixed-end forces from member loads (with end-release condensation)
+  const fMemberLocal = new Float64Array(MEMBER_DOF);
   for (const ml of memberLoads) {
     const fLocal = computeMemberLoadFixedEndForces(member, ml);
-    for (let i = 0; i < 6; i++) {
-      fMemberLocal[i]! += fLocal[i]!;
+    if (hasRelease) {
+      const kOrig = buildLocalStiffness(member);
+      applyEndReleasesToForce(fLocal, kOrig, member.releases);
+    }
+    for (let i = 0; i < MEMBER_DOF; i++) {
+      fMemberLocal[i] = fMemberLocal[i]! + fLocal[i]!;
     }
   }
 
-  const endForces = new Float64Array(6);
-  for (let i = 0; i < 6; i++) {
+  const endForces = new Float64Array(MEMBER_DOF);
+  for (let i = 0; i < MEMBER_DOF; i++) {
     endForces[i] = kd[i]! - fMemberLocal[i]!;
   }
 

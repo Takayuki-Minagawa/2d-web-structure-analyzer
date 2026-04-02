@@ -1,30 +1,31 @@
 import React, { useRef, useEffect, useCallback } from 'react';
-import { CanvasRenderer } from '../../rendering/canvasApp';
+import { ThreeApp } from '../../rendering/threeApp';
+import type { EditAction } from '../../rendering/threeApp';
 import { useProjectStore } from '../../state/projectStore';
 import { useViewStore } from '../../state/viewStore';
 import { useSelectionStore } from '../../state/selectionStore';
 
+const FIXED_RESTRAINT = { ux: true, uy: true, uz: true, rx: true, ry: true, rz: true };
+const FREE_RESTRAINT = { ux: false, uy: false, uz: false, rx: false, ry: false, rz: false };
+
 export const CanvasPanel: React.FC = () => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rendererRef = useRef<CanvasRenderer | null>(null);
-  const isDragging = useRef(false);
-  const isPanning = useRef(false);
-  const lastMouse = useRef({ x: 0, y: 0 });
-  const dragNodeId = useRef<string | null>(null);
-  const memberStartNode = useRef<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const appRef = useRef<ThreeApp | null>(null);
 
   const model = useProjectStore((s) => s.model);
   const analysisResult = useProjectStore((s) => s.analysisResult);
+  const fitViewVersion = useProjectStore((s) => s.fitViewVersion);
   const addNode = useProjectStore((s) => s.addNode);
-  const updateNode = useProjectStore((s) => s.updateNode);
   const addMember = useProjectStore((s) => s.addMember);
+  const updateNode = useProjectStore((s) => s.updateNode);
   const removeNode = useProjectStore((s) => s.removeNode);
   const removeMember = useProjectStore((s) => s.removeMember);
   const addNodalLoad = useProjectStore((s) => s.addNodalLoad);
   const addMemberLoad = useProjectStore((s) => s.addMemberLoad);
 
-  const editTool = useViewStore((s) => s.editTool);
   const displayMode = useViewStore((s) => s.displayMode);
+  const editTool = useViewStore((s) => s.editTool);
+  const theme = useViewStore((s) => s.theme);
   const showNodeLabels = useViewStore((s) => s.showNodeLabels);
   const showMemberLabels = useViewStore((s) => s.showMemberLabels);
   const showLoads = useViewStore((s) => s.showLoads);
@@ -38,249 +39,149 @@ export const CanvasPanel: React.FC = () => {
   const selectMember = useSelectionStore((s) => s.selectMember);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
 
-  // Initialize renderer
+  const handleEditAction = useCallback((action: EditAction) => {
+    switch (action.kind) {
+      case 'addNode': {
+        const id = addNode(action.x, action.y, action.z);
+        selectNode(id);
+        break;
+      }
+      case 'addMember': {
+        const id = addMember(action.ni, action.nj);
+        selectMember(id);
+        break;
+      }
+      case 'setSupport': {
+        const node = useProjectStore.getState().model.nodes.find(n => n.id === action.nodeId);
+        if (!node) break;
+        const isFixed = node.restraint.ux && node.restraint.uy && node.restraint.uz;
+        updateNode(action.nodeId, { restraint: isFixed ? FREE_RESTRAINT : FIXED_RESTRAINT });
+        selectNode(action.nodeId);
+        break;
+      }
+      case 'addNodalLoad':
+        addNodalLoad({ nodeId: action.nodeId, fx: 0, fy: 0, fz: -10, mx: 0, my: 0, mz: 0 });
+        selectNode(action.nodeId);
+        break;
+      case 'addMemberLoad':
+        addMemberLoad({ memberId: action.memberId, type: 'udl', direction: 'localY', value: -5 });
+        selectMember(action.memberId);
+        break;
+      case 'moveNode':
+        updateNode(action.nodeId, { x: action.x, y: action.y, z: action.z });
+        break;
+      case 'deleteSelected': {
+        const nodeIds = useSelectionStore.getState().selectedNodeIds;
+        const memberIds = useSelectionStore.getState().selectedMemberIds;
+        for (const id of memberIds) removeMember(id);
+        for (const id of nodeIds) removeNode(id);
+        clearSelection();
+        break;
+      }
+      case 'cancelOperation':
+        clearSelection();
+        break;
+    }
+  }, [addNode, addMember, updateNode, removeNode, removeMember, addNodalLoad, addMemberLoad, selectNode, selectMember, clearSelection]);
+
+  // Initialize Three.js app
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!container) return;
 
-    const renderer = new CanvasRenderer(canvas);
-    rendererRef.current = renderer;
+    const app = new ThreeApp(container);
+    appRef.current = app;
 
-    // Center viewport
-    const rect = canvas.getBoundingClientRect();
-    renderer.viewport.offsetX = rect.width / 2;
-    renderer.viewport.offsetY = rect.height / 2;
-    renderer.resize();
-
-    const handleResize = () => {
-      renderer.resize();
+    app.onSelectionChanged = (sel, multi) => {
+      if (sel.kind === 'node') selectNode(sel.nodeId, multi);
+      else if (sel.kind === 'member') selectMember(sel.memberId, multi);
+      else clearSelection();
     };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+
+    app.onEditAction = handleEditAction;
+
+    return () => {
+      app.dispose();
+      appRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Render loop
+  // Update edit tool
   useEffect(() => {
-    const renderer = rendererRef.current;
-    if (!renderer) return;
+    appRef.current?.setEditTool(editTool);
+  }, [editTool]);
 
-    renderer.resize();
-    renderer.render(model, analysisResult, {
-      displayMode,
-      showNodeLabels,
-      showMemberLabels,
-      showLoads,
-      showSupports,
-      deformationScale,
-      diagramScale,
-      selectedNodeIds,
-      selectedMemberIds,
-    });
-  }, [
-    model,
-    analysisResult,
-    displayMode,
-    showNodeLabels,
-    showMemberLabels,
-    showLoads,
-    showSupports,
-    deformationScale,
-    diagramScale,
-    selectedNodeIds,
-    selectedMemberIds,
-  ]);
+  // Keep edit action callback in sync
+  useEffect(() => {
+    if (appRef.current) appRef.current.onEditAction = handleEditAction;
+  }, [handleEditAction]);
 
-  const getMousePos = (e: React.MouseEvent): { x: number; y: number } => {
-    const rect = canvasRef.current!.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-  };
+  // Update model
+  useEffect(() => {
+    appRef.current?.setModel(model);
+  }, [model]);
 
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    const { x, y } = getMousePos(e);
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-
-    lastMouse.current = { x, y };
-
-    // Middle button or space: start pan
-    if (e.button === 1) {
-      isPanning.current = true;
-      return;
+  // Fit to view when a whole-model load occurs (import, sample, reset)
+  const prevFitVersion = useRef(fitViewVersion);
+  useEffect(() => {
+    if (fitViewVersion !== prevFitVersion.current) {
+      prevFitVersion.current = fitViewVersion;
+      appRef.current?.fitToView();
     }
+  }, [fitViewVersion]);
 
-    if (e.button !== 0) return;
+  // Update results
+  useEffect(() => {
+    appRef.current?.setResult(analysisResult);
+  }, [analysisResult]);
 
-    if (editTool === 'select') {
-      const hitNode = renderer.findNodeAt(x, y, model.nodes);
-      if (hitNode) {
-        selectNode(hitNode.id, e.shiftKey);
-        isDragging.current = true;
-        dragNodeId.current = hitNode.id;
-        return;
-      }
-      const hitMember = renderer.findMemberAt(x, y, model);
-      if (hitMember) {
-        selectMember(hitMember.id, e.shiftKey);
-        return;
-      }
-      clearSelection();
-    } else if (editTool === 'addNode') {
-      const [mx, my] = renderer.screenToModel(x, y);
-      const snappedX = Math.round(mx * 10) / 10;
-      const snappedY = Math.round(my * 10) / 10;
-      const id = addNode(snappedX, snappedY);
-      selectNode(id);
-    } else if (editTool === 'addMember') {
-      const hitNode = renderer.findNodeAt(x, y, model.nodes);
-      if (hitNode) {
-        if (memberStartNode.current === null) {
-          memberStartNode.current = hitNode.id;
-          selectNode(hitNode.id);
-        } else {
-          if (memberStartNode.current !== hitNode.id) {
-            const id = addMember(memberStartNode.current, hitNode.id);
-            selectMember(id);
-          }
-          memberStartNode.current = null;
-        }
-      }
-    } else if (editTool === 'setSupport') {
-      const hitNode = renderer.findNodeAt(x, y, model.nodes);
-      if (hitNode) {
-        // Cycle: free -> pin -> fix -> roller -> free
-        const { ux, uy, rz } = hitNode.restraint;
-        if (!ux && !uy && !rz) {
-          updateNode(hitNode.id, { restraint: { ux: true, uy: true, rz: false } });
-        } else if (ux && uy && !rz) {
-          updateNode(hitNode.id, { restraint: { ux: true, uy: true, rz: true } });
-        } else if (ux && uy && rz) {
-          updateNode(hitNode.id, { restraint: { ux: false, uy: true, rz: false } });
-        } else {
-          updateNode(hitNode.id, { restraint: { ux: false, uy: false, rz: false } });
-        }
-        selectNode(hitNode.id);
-      }
-    } else if (editTool === 'addNodalLoad') {
-      const hitNode = renderer.findNodeAt(x, y, model.nodes);
-      if (hitNode) {
-        addNodalLoad({ nodeId: hitNode.id, fx: 0, fy: -10, mz: 0 });
-        selectNode(hitNode.id);
-      }
-    } else if (editTool === 'addMemberLoad') {
-      const hitMember = renderer.findMemberAt(x, y, model);
-      if (hitMember) {
-        addMemberLoad({ memberId: hitMember.id, type: 'udl', direction: 'localY', value: -5 });
-        selectMember(hitMember.id);
-      }
-    }
-  };
+  // Update display mode
+  useEffect(() => {
+    appRef.current?.setDisplayMode(displayMode);
+  }, [displayMode]);
 
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const { x, y } = getMousePos(e);
-    const renderer = rendererRef.current;
-    if (!renderer) return;
+  // Update theme
+  useEffect(() => {
+    appRef.current?.setTheme(theme);
+  }, [theme]);
 
-    const dx = x - lastMouse.current.x;
-    const dy = y - lastMouse.current.y;
-
-    if (isPanning.current) {
-      renderer.viewport.offsetX += dx;
-      renderer.viewport.offsetY += dy;
-      lastMouse.current = { x, y };
-      renderer.render(model, analysisResult, {
-        displayMode,
-        showNodeLabels,
-        showMemberLabels,
-        showLoads,
-        showSupports,
-        deformationScale,
-        diagramScale,
-        selectedNodeIds,
-        selectedMemberIds,
-      });
-      return;
-    }
-
-    if (isDragging.current && dragNodeId.current && editTool === 'select') {
-      const [mx, my] = renderer.screenToModel(x, y);
-      const snappedX = Math.round(mx * 10) / 10;
-      const snappedY = Math.round(my * 10) / 10;
-      updateNode(dragNodeId.current, { x: snappedX, y: snappedY });
-    }
-
-    lastMouse.current = { x, y };
-  };
-
-  const handleMouseUp = () => {
-    isDragging.current = false;
-    isPanning.current = false;
-    dragNodeId.current = null;
-  };
-
-  const handleWheel = (e: React.WheelEvent) => {
-    const renderer = rendererRef.current;
-    if (!renderer) return;
-
-    const { x, y } = getMousePos(e as unknown as React.MouseEvent);
-    const [mx, my] = renderer.screenToModel(x, y);
-
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    renderer.viewport.scale *= factor;
-
-    // Adjust offset so the point under cursor stays fixed
-    const [newSx, newSy] = renderer.modelToScreen(mx, my);
-    renderer.viewport.offsetX += x - newSx;
-    renderer.viewport.offsetY += y - newSy;
-
-    renderer.render(model, analysisResult, {
-      displayMode,
-      showNodeLabels,
-      showMemberLabels,
-      showLoads,
-      showSupports,
-      deformationScale,
-      diagramScale,
-      selectedNodeIds,
-      selectedMemberIds,
-    });
-  };
-
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent) => {
-      // Ignore key events when focus is on an input or select element
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        e.preventDefault();
-        for (const id of selectedNodeIds) removeNode(id);
-        for (const id of selectedMemberIds) removeMember(id);
-        clearSelection();
-      }
-      if (e.key === 'Escape') {
-        memberStartNode.current = null;
-        clearSelection();
-      }
-    },
-    [selectedNodeIds, selectedMemberIds, removeNode, removeMember, clearSelection]
-  );
+  // Update scales
+  useEffect(() => {
+    appRef.current?.setDeformationScale(deformationScale);
+  }, [deformationScale]);
 
   useEffect(() => {
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleKeyDown]);
+    appRef.current?.setDiagramScale(diagramScale);
+  }, [diagramScale]);
+
+  // Sync selection highlight from selectionStore to ThreeApp
+  useEffect(() => {
+    appRef.current?.setSelectedIds(selectedNodeIds, selectedMemberIds);
+  }, [selectedNodeIds, selectedMemberIds]);
+
+  // Update label visibility
+  useEffect(() => {
+    appRef.current?.setShowNodeLabels(showNodeLabels);
+  }, [showNodeLabels]);
+
+  useEffect(() => {
+    appRef.current?.setShowMemberLabels(showMemberLabels);
+  }, [showMemberLabels]);
+
+  useEffect(() => {
+    appRef.current?.setShowLoads(showLoads);
+  }, [showLoads]);
+
+  useEffect(() => {
+    appRef.current?.setShowSupports(showSupports);
+  }, [showSupports]);
 
   return (
-    <canvas
-      ref={canvasRef}
+    <div
+      ref={containerRef}
       className="main-canvas"
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      onWheel={handleWheel}
-      onContextMenu={(e) => e.preventDefault()}
+      style={{ position: 'relative', width: '100%', height: '100%' }}
     />
   );
 };

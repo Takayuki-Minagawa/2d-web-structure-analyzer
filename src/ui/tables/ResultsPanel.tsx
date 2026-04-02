@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useProjectStore } from '../../state/projectStore';
 import { useT } from '../../i18n';
+import type { ProjectModel } from '../../core/model/types';
+import { buildEffectiveReactionRows } from './reactionRows';
 
 type TabId = 'displacements' | 'reactions' | 'endForces';
 
@@ -42,15 +44,18 @@ export const ResultsPanel: React.FC = () => {
         <div className="table-wrapper">
           <table>
             <thead>
-              <tr><th>{t('results.node')}</th><th>ux</th><th>uy</th><th>rz</th></tr>
+              <tr><th>{t('results.node')}</th><th>ux</th><th>uy</th><th>uz</th><th>rx</th><th>ry</th><th>rz</th></tr>
             </thead>
             <tbody>
               {model.nodes.map((n, i) => (
                 <tr key={n.id}>
-                  <td>N{i}</td>
-                  <td>{fmt(result.displacements[i * 3])}</td>
-                  <td>{fmt(result.displacements[i * 3 + 1])}</td>
-                  <td>{fmt(result.displacements[i * 3 + 2])}</td>
+                  <td>{n.id.substring(0, 5)}</td>
+                  <td>{fmt(result.displacements[i * 6])}</td>
+                  <td>{fmt(result.displacements[i * 6 + 1])}</td>
+                  <td>{fmt(result.displacements[i * 6 + 2])}</td>
+                  <td>{fmt(result.displacements[i * 6 + 3])}</td>
+                  <td>{fmt(result.displacements[i * 6 + 4])}</td>
+                  <td>{fmt(result.displacements[i * 6 + 5])}</td>
                 </tr>
               ))}
             </tbody>
@@ -59,47 +64,29 @@ export const ResultsPanel: React.FC = () => {
       )}
 
       {activeTab === 'reactions' && (
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr><th>{t('results.node')}</th><th>Rx</th><th>Ry</th><th>Mz</th></tr>
-            </thead>
-            <tbody>
-              {model.nodes
-                .map((n, i) => ({ n, i }))
-                .filter(({ n }) => n.restraint.ux || n.restraint.uy || n.restraint.rz)
-                .map(({ n, i }) => (
-                  <tr key={n.id}>
-                    <td>N{i}</td>
-                    <td>{n.restraint.ux ? fmt(result.reactions[i * 3]) : '-'}</td>
-                    <td>{n.restraint.uy ? fmt(result.reactions[i * 3 + 1]) : '-'}</td>
-                    <td>{n.restraint.rz ? fmt(result.reactions[i * 3 + 2]) : '-'}</td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
+        <ReactionTable model={model} result={result} />
       )}
 
       {activeTab === 'endForces' && (
         <div className="table-wrapper">
           <table>
             <thead>
-              <tr><th>{t('results.member')}</th><th>Ni</th><th>Vi</th><th>Mi</th><th>Nj</th><th>Vj</th><th>Mj</th></tr>
+              <tr>
+                <th>{t('results.member')}</th>
+                <th>Ni</th><th>Vyi</th><th>Vzi</th><th>Mxi</th><th>Myi</th><th>Mzi</th>
+                <th>Nj</th><th>Vyj</th><th>Vzj</th><th>Mxj</th><th>Myj</th><th>Mzj</th>
+              </tr>
             </thead>
             <tbody>
-              {model.members.map((m, idx) => {
+              {model.members.map((m) => {
                 const ef = result.elementEndForces[m.id];
                 if (!ef) return null;
                 return (
                   <tr key={m.id}>
-                    <td>M{idx}</td>
-                    <td>{fmt(ef[0])}</td>
-                    <td>{fmt(ef[1])}</td>
-                    <td>{fmt(ef[2])}</td>
-                    <td>{fmt(ef[3])}</td>
-                    <td>{fmt(ef[4])}</td>
-                    <td>{fmt(ef[5])}</td>
+                    <td>{m.id.substring(0, 5)}</td>
+                    {Array.from({ length: 12 }, (_, k) => (
+                      <td key={k}>{fmt(ef[k])}</td>
+                    ))}
                   </tr>
                 );
               })}
@@ -114,6 +101,50 @@ export const ResultsPanel: React.FC = () => {
             <div key={i} className="warning-text">{w}</div>
           ))}
         </div>
+      )}
+    </div>
+  );
+};
+
+function useEffectiveReactions(model: ProjectModel, reactions: number[]) {
+  return useMemo(
+    () => buildEffectiveReactionRows(model, reactions),
+    [model, reactions]
+  );
+}
+
+const ReactionTable: React.FC<{
+  model: ProjectModel;
+  result: import('../../state/projectStore').AnalysisResult;
+}> = ({ model, result }) => {
+  const t = useT();
+  const { rows, hasSharedReactions } = useEffectiveReactions(model, result.reactions);
+
+  return (
+    <div className="table-wrapper">
+      <table>
+        <thead>
+          <tr><th>{t('results.node')}</th><th>Rx</th><th>Ry</th><th>Rz</th><th>Mx</th><th>My</th><th>Mz</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.nodeId}>
+              <td>{row.nodeId.substring(0, 5)}</td>
+              {row.cells.map((cell, k) => (
+                <td key={k}>
+                  {cell.value !== null
+                    ? `${fmt(cell.value)}${cell.isShared ? '*' : ''}`
+                    : cell.isShared
+                      ? t('results.coupledShared')
+                      : '-'}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {hasSharedReactions && (
+        <div className="warning-text">{t('results.coupledReactionNote')}</div>
       )}
     </div>
   );
