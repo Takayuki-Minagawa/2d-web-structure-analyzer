@@ -18,12 +18,28 @@ function generateId(): string {
 
 const forceBase: Record<string, number> = { N: 1, kN: 1000 };
 const lengthBase: Record<string, number> = { mm: 0.001, cm: 0.01, m: 1 };
+const DEFAULT_POISSON_RATIO = 0.3;
+
+function normalizeModel(model: ProjectModel): ProjectModel {
+  return {
+    ...model,
+    materials: model.materials.map((mat) => ({
+      ...mat,
+      nu: mat.nu ?? DEFAULT_POISSON_RATIO,
+    })),
+    sections: model.sections.map((sec) => ({
+      ...sec,
+      As: sec.As ?? sec.A,
+    })),
+    units: model.units ?? { force: 'kN', length: 'm', moment: 'kN·m' },
+  };
+}
 
 function createDefaultModel(): ProjectModel {
   return {
     nodes: [],
     materials: [
-      { id: generateId(), name: 'Steel', E: 205000, nu: 0.3 },
+      { id: generateId(), name: 'Steel', E: 205000, nu: DEFAULT_POISSON_RATIO },
     ],
     sections: [
       { id: generateId(), name: 'Default', A: 0.01, I: 1e-4, As: 0.005 },
@@ -339,10 +355,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   markResultStale: () => set({ isResultStale: true }),
 
   loadModel: (model) => set({
-    model: {
-      ...model,
-      units: model.units ?? { force: 'kN', length: 'm', moment: 'kN·m' },
-    },
+    model: normalizeModel(model),
     analysisResult: null,
     analysisError: null,
     isResultStale: false,
@@ -394,6 +407,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ...sec,
         A: sec.A * fL2,
         I: sec.I * fL4,
+        As: (sec.As ?? sec.A) * fL2,
       }));
 
       const nodalLoads = s.model.nodalLoads.map((l) => ({

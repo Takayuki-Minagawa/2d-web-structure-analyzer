@@ -116,7 +116,7 @@ export const App: React.FC = () => {
       reader.readAsText(file);
     };
     input.click();
-  }, [loadModel, t]);
+  }, [loadModel, t, clearSelection]);
 
   const handleLoadSample = useCallback(() => {
     const sampleModel = {
@@ -126,8 +126,8 @@ export const App: React.FC = () => {
         { id: 'n2', x: 6, y: 4, restraint: { ux: false, uy: false, rz: false } },
         { id: 'n3', x: 6, y: 0, restraint: { ux: true, uy: true, rz: false } },
       ],
-      materials: [{ id: 'mat1', name: 'Steel', E: 205000 }],
-      sections: [{ id: 'sec1', name: 'H-200x100', A: 0.0027, I: 1.84e-5 }],
+      materials: [{ id: 'mat1', name: 'Steel', E: 205000, nu: 0.3 }],
+      sections: [{ id: 'sec1', name: 'H-200x100', A: 0.0027, I: 1.84e-5, As: 0.001 }],
       members: [
         { id: 'm1', ni: 'n0', nj: 'n1', materialId: 'mat1', sectionId: 'sec1' },
         { id: 'm2', ni: 'n1', nj: 'n2', materialId: 'mat1', sectionId: 'sec1' },
