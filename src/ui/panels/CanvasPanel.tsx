@@ -31,6 +31,8 @@ export const CanvasPanel: React.FC = () => {
   const deformationScale = useViewStore((s) => s.deformationScale);
   const diagramScale = useViewStore((s) => s.diagramScale);
 
+  const selectedNodeIds = useSelectionStore((s) => s.selectedNodeIds);
+  const selectedMemberIds = useSelectionStore((s) => s.selectedMemberIds);
   const selectNode = useSelectionStore((s) => s.selectNode);
   const selectMember = useSelectionStore((s) => s.selectMember);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
@@ -150,6 +152,11 @@ export const CanvasPanel: React.FC = () => {
   useEffect(() => {
     appRef.current?.setDiagramScale(diagramScale);
   }, [diagramScale]);
+
+  // Sync selection highlight from selectionStore to ThreeApp
+  useEffect(() => {
+    appRef.current?.setSelectedIds(selectedNodeIds, selectedMemberIds);
+  }, [selectedNodeIds, selectedMemberIds]);
 
   // Update label visibility
   useEffect(() => {

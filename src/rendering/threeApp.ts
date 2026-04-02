@@ -77,6 +77,7 @@ export class ThreeApp {
   private onResizeBound: () => void;
   private pointerDownPos: { x: number; y: number } | null = null;
   private draggingNodeId: string | null = null;
+  private draggingNodeZ = 0;
   private isDragging = false;
 
   private model: ProjectModel | null = null;
@@ -84,8 +85,8 @@ export class ThreeApp {
   private displayMode: DisplayMode = 'model';
   private deformationScale = 50;
   private diagramScale = 1;
-  private selectedNodeId: string | null = null;
-  private selectedMemberId: string | null = null;
+  private selectedNodeIds: ReadonlySet<string> = new Set();
+  private selectedMemberIds: ReadonlySet<string> = new Set();
   private isDark = false;
   private showNodeLabels = true;
   private showMemberLabels = true;
@@ -217,9 +218,9 @@ export class ThreeApp {
     if (tool !== 'addMember') this.pendingMemberStart = null;
   }
 
-  setSelection(sel: ViewerSelection): void {
-    this.selectedNodeId = sel.kind === 'node' ? sel.nodeId : null;
-    this.selectedMemberId = sel.kind === 'member' ? sel.memberId : null;
+  setSelectedIds(nodeIds: ReadonlySet<string>, memberIds: ReadonlySet<string>): void {
+    this.selectedNodeIds = nodeIds;
+    this.selectedMemberIds = memberIds;
     this.rebuildNodes();
     this.rebuildMembers();
   }
@@ -268,7 +269,7 @@ export class ThreeApp {
     const colors: number[] = [];
     for (const n of this.model.nodes) {
       positions.push(n.x, n.y, n.z);
-      const c = n.id === this.selectedNodeId ? NODE_COLOR_SELECTED : NODE_COLOR;
+      const c = this.selectedNodeIds.has(n.id) ? NODE_COLOR_SELECTED : NODE_COLOR;
       colors.push(c.r, c.g, c.b);
     }
     if (positions.length === 0) return;
@@ -294,7 +295,7 @@ export class ThreeApp {
       const nj = nodeMap.get(m.nj);
       if (!ni || !nj) continue;
       positions.push(ni.x, ni.y, ni.z, nj.x, nj.y, nj.z);
-      const c = m.id === this.selectedMemberId ? MEMBER_COLOR_SELECTED : MEMBER_COLOR;
+      const c = this.selectedMemberIds.has(m.id) ? MEMBER_COLOR_SELECTED : MEMBER_COLOR;
       colors.push(c.r, c.g, c.b, c.r, c.g, c.b);
     }
     if (positions.length === 0) return;
@@ -527,7 +528,11 @@ export class ThreeApp {
     if (this.editTool === 'select' && this.model) {
       const rect = this.renderer.domElement.getBoundingClientRect();
       const hit = this.pickNode(e.clientX - rect.left, e.clientY - rect.top);
-      if (hit) this.draggingNodeId = hit.nodeId;
+      if (hit) {
+        this.draggingNodeId = hit.nodeId;
+        const node = this.model.nodes.find(n => n.id === hit.nodeId);
+        this.draggingNodeZ = node?.z ?? 0;
+      }
     }
   };
 
@@ -542,7 +547,7 @@ export class ThreeApp {
     if (!this.isDragging) return;
 
     const rect = this.renderer.domElement.getBoundingClientRect();
-    const pos = this.screenToGroundPlane(e.clientX - rect.left, e.clientY - rect.top);
+    const pos = this.screenToPlane(e.clientX - rect.left, e.clientY - rect.top, this.draggingNodeZ);
     if (pos) {
       this.onEditAction?.({ kind: 'moveNode', nodeId: this.draggingNodeId, x: pos.x, y: pos.y, z: pos.z });
     }
@@ -566,7 +571,15 @@ export class ThreeApp {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    // Ignore shortcuts when focus is inside a form element
+    const tag = (e.target as HTMLElement)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        (e.target as HTMLElement)?.isContentEditable) {
+      return;
+    }
+
     if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
       this.onEditAction?.({ kind: 'deleteSelected' });
     } else if (e.key === 'Escape') {
       this.pendingMemberStart = null;
@@ -603,46 +616,39 @@ export class ThreeApp {
       const sel = ns <= ms
         ? { kind: 'node' as const, nodeId: nodeHit.nodeId }
         : { kind: 'member' as const, memberId: memberHit.memberId };
-      if (!multi) this.setSelection(sel);
       this.onSelectionChanged?.(sel, multi);
       return;
     }
     if (nodeHit) {
-      const sel = { kind: 'node' as const, nodeId: nodeHit.nodeId };
-      if (!multi) this.setSelection(sel);
-      this.onSelectionChanged?.(sel, multi);
+      this.onSelectionChanged?.({ kind: 'node', nodeId: nodeHit.nodeId }, multi);
       return;
     }
     if (memberHit) {
-      const sel = { kind: 'member' as const, memberId: memberHit.memberId };
-      if (!multi) this.setSelection(sel);
-      this.onSelectionChanged?.(sel, multi);
+      this.onSelectionChanged?.({ kind: 'member', memberId: memberHit.memberId }, multi);
       return;
     }
     if (!multi) {
-      const sel: ViewerSelection = { kind: 'none' };
-      this.setSelection(sel);
-      this.onSelectionChanged?.(sel, false);
+      this.onSelectionChanged?.({ kind: 'none' }, false);
     }
   }
 
-  /** Raycast from screen (x,y) to the Z=0 ground plane, returning world coords. */
-  private screenToGroundPlane(x: number, y: number): { x: number; y: number; z: number } | null {
+  /** Raycast from screen (x,y) to a Z-plane at given height, returning world coords. */
+  private screenToPlane(x: number, y: number, planeZ = 0): { x: number; y: number; z: number } | null {
     const w = this.renderer.domElement.clientWidth;
     const h = this.renderer.domElement.clientHeight;
     const ndcX = (x / w) * 2 - 1;
     const ndcY = -(y / h) * 2 + 1;
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -planeZ);
     const target = new THREE.Vector3();
     const hit = raycaster.ray.intersectPlane(plane, target);
     if (!hit) return null;
-    return { x: Math.round(target.x), y: Math.round(target.y), z: 0 };
+    return { x: Math.round(target.x), y: Math.round(target.y), z: planeZ };
   }
 
   private handleAddNode(x: number, y: number): void {
-    const pos = this.screenToGroundPlane(x, y);
+    const pos = this.screenToPlane(x, y);
     if (!pos) return;
     this.onEditAction?.({ kind: 'addNode', x: pos.x, y: pos.y, z: pos.z });
   }
@@ -652,7 +658,6 @@ export class ThreeApp {
     if (!nodeHit) return;
     if (!this.pendingMemberStart) {
       this.pendingMemberStart = nodeHit.nodeId;
-      this.setSelection({ kind: 'node', nodeId: nodeHit.nodeId });
       this.onSelectionChanged?.({ kind: 'node', nodeId: nodeHit.nodeId }, false);
     } else {
       if (nodeHit.nodeId !== this.pendingMemberStart) {
