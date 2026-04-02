@@ -1,5 +1,6 @@
 {
   "name": "3d-web-structure-analyzer",
+  "description": "Browser-based 3D elastic frame structure analyzer with Three.js visualization",
   "private": true,
   "version": "0.0.0",
   "type": "module",
