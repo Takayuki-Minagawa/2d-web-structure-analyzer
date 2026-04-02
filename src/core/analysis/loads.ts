@@ -99,7 +99,9 @@ export function computeUDLFixedEndForces(
 
 /**
  * Compute 12-element fixed-end force vector (local) for CMQ loads.
- * CMQ loads specify concentrated forces/moments directly at member ends.
+ * CMQ loads specify equivalent end forces/moments directly at member ends.
+ * Mid-span moments (`moy`/`moz`) do not create additional nodal equivalents;
+ * they are applied later as diagram-shape corrections for display.
  */
 export function computeCMQFixedEndForces(
   _member: IndexedMember,
@@ -124,6 +126,34 @@ export function computeCMQFixedEndForces(
   f[11] = load.jMz;
 
   return f;
+}
+
+/**
+ * CMQ can also carry mid-span bending moments that shape the displayed
+ * section-force diagram without adding extra nodal equivalents.
+ *
+ * We model that with a parabolic "bubble" correction that is zero at both ends
+ * and reaches the requested `moy` / `moz` at mid-span.
+ */
+export function computeCMQMomentDiagramCorrection(
+  load: CMQMemberLoad,
+  x: number,
+  L: number
+): { My: number; Mz: number } {
+  if (L <= 0) return { My: 0, Mz: 0 };
+
+  const xi = Math.max(0, Math.min(1, x / L));
+  const bubble = 4 * xi * (1 - xi);
+
+  // CMQ end moments are stored as equivalent nodal loads, so the displayed
+  // internal moment baseline at mid-span is the line between -iM and +jM.
+  const myBaselineMid = (-load.iMy + load.jMy) / 2;
+  const mzBaselineMid = (-load.iMz + load.jMz) / 2;
+
+  return {
+    My: (load.moy - myBaselineMid) * bubble,
+    Mz: (load.moz - mzBaselineMid) * bubble,
+  };
 }
 
 /**

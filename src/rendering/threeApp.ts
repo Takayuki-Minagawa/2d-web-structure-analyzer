@@ -394,6 +394,27 @@ export class ThreeApp {
       this.loadGroup.add(new THREE.ArrowHelper(dir, start, len, color, HEAD_LEN, HEAD_WIDTH));
     };
 
+    const addMomentSymbol = (
+      origin: THREE.Vector3,
+      axis: THREE.Vector3,
+      value: number,
+      color: number,
+      armLength = ARROW_LEN * 0.5
+    ) => {
+      if (Math.abs(value) < 1e-10) return;
+      const axisDir = axis.clone().normalize();
+      const ref = Math.abs(axisDir.z) > 0.9
+        ? new THREE.Vector3(1, 0, 0)
+        : new THREE.Vector3(0, 0, 1);
+      const arm = new THREE.Vector3().crossVectors(axisDir, ref).normalize();
+      const sign = value > 0 ? 1 : -1;
+      const tipDir = new THREE.Vector3().crossVectors(arm, axisDir).normalize().multiplyScalar(sign);
+      const armOffset = origin.clone().add(arm.clone().multiplyScalar(armLength));
+      addArrow(armOffset, tipDir, armLength, color);
+      const armOffset2 = origin.clone().add(arm.clone().multiplyScalar(-armLength));
+      addArrow(armOffset2, tipDir.clone().negate(), armLength, color);
+    };
+
     // ── Nodal loads: forces + moments ──
     for (const nl of this.model.nodalLoads) {
       const node = nodeMap.get(nl.nodeId);
@@ -418,18 +439,7 @@ export class ThreeApp {
         [nl.mz, new THREE.Vector3(0, 0, 1)],
       ];
       for (const [v, axis] of moments) {
-        if (Math.abs(v) < 1e-10) continue;
-        // Draw a double arrow perpendicular to the axis to indicate moment
-        const perp = Math.abs(axis.z) > 0.9
-          ? new THREE.Vector3(1, 0, 0)
-          : new THREE.Vector3(0, 0, 1);
-        const arm = new THREE.Vector3().crossVectors(axis, perp).normalize();
-        const sign = v > 0 ? 1 : -1;
-        const tipDir = new THREE.Vector3().crossVectors(arm, axis).normalize().multiplyScalar(sign);
-        const armOffset = o.clone().add(arm.clone().multiplyScalar(ARROW_LEN * 0.5));
-        addArrow(armOffset, tipDir, ARROW_LEN * 0.5, MOMENT_COLOR);
-        const armOffset2 = o.clone().add(arm.clone().multiplyScalar(-ARROW_LEN * 0.5));
-        addArrow(armOffset2, tipDir.clone().negate(), ARROW_LEN * 0.5, MOMENT_COLOR);
+        addMomentSymbol(o, axis, v, MOMENT_COLOR);
       }
     }
 
@@ -467,7 +477,7 @@ export class ThreeApp {
         const dir = localDir(ml.direction).multiplyScalar(ml.value > 0 ? 1 : -1);
         addArrow(pos, dir, ARROW_LEN, FORCE_COLOR);
       } else if (ml.type === 'cmq') {
-        // CMQ: show force arrows at i-end and j-end
+        // CMQ: show equivalent end forces plus end/mid moments.
         const cmqForces: [THREE.Vector3, [number, number, number]][] = [
           [pI, [ml.iQx, ml.iQy, ml.iQz]],
           [pJ, [ml.jQx, ml.jQy, ml.jQz]],
@@ -476,6 +486,19 @@ export class ThreeApp {
           if (Math.abs(qx) > 1e-10) addArrow(pos, lx.clone().multiplyScalar(qx > 0 ? 1 : -1), ARROW_LEN * 0.5, FORCE_COLOR);
           if (Math.abs(qy) > 1e-10) addArrow(pos, ly.clone().multiplyScalar(qy > 0 ? 1 : -1), ARROW_LEN * 0.5, FORCE_COLOR);
           if (Math.abs(qz) > 1e-10) addArrow(pos, lz.clone().multiplyScalar(qz > 0 ? 1 : -1), ARROW_LEN * 0.5, FORCE_COLOR);
+        }
+
+        const pMid = pI.clone().lerp(pJ, 0.5);
+        const cmqMoments: [THREE.Vector3, THREE.Vector3, number][] = [
+          [pI, ly, ml.iMy],
+          [pI, lz, ml.iMz],
+          [pJ, ly, ml.jMy],
+          [pJ, lz, ml.jMz],
+          [pMid, ly, ml.moy],
+          [pMid, lz, ml.moz],
+        ];
+        for (const [pos, axis, value] of cmqMoments) {
+          addMomentSymbol(pos, axis, value, MOMENT_COLOR, ARROW_LEN * 0.35);
         }
       }
     }

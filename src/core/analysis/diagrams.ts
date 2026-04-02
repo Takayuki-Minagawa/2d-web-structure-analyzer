@@ -2,12 +2,14 @@ import type {
   IndexedModel,
   IndexedMember,
   MemberLoad,
+  CMQMemberLoad,
   DiagramSeries,
   DiagramPoint,
 } from '../model/types';
 import { buildTransformationMatrix, transformVectorToLocal } from './transforms';
 import { getMemberDofs } from './assembly';
 import { computePhiY, computePhiZ } from './element3dFrame';
+import { computeCMQMomentDiagramCorrection } from './loads';
 
 const NUM_SAMPLE_POINTS = 51;
 
@@ -74,6 +76,8 @@ export function generateDiagram(
       sampleSet.add(ml.a);
       sampleSet.add(Math.max(0, ml.a - 1e-8));
       sampleSet.add(Math.min(L, ml.a + 1e-8));
+    } else if (ml.type === 'cmq' && (Math.abs(ml.moy) > 1e-10 || Math.abs(ml.moz) > 1e-10)) {
+      sampleSet.add(L / 2);
     }
   }
 
@@ -91,6 +95,7 @@ export function generateDiagram(
   const axialPoints = memberLoads.filter(ml => ml.type === 'point' && ml.direction === 'localX');
   const yPoints = memberLoads.filter(ml => ml.type === 'point' && ml.direction === 'localY');
   const zPoints = memberLoads.filter(ml => ml.type === 'point' && ml.direction === 'localZ');
+  const cmqLoads = memberLoads.filter((ml): ml is CMQMemberLoad => ml.type === 'cmq');
 
   const points: DiagramPoint[] = positions.map((x) => {
     // Axial force
@@ -131,6 +136,9 @@ export function generateDiagram(
     for (const pl of zPoints) {
       if (pl.type === 'point' && x >= pl.a) My += pl.value * (x - pl.a);
     }
+    for (const cmq of cmqLoads) {
+      My += computeCMQMomentDiagramCorrection(cmq, x, L).My;
+    }
 
     // Bending Mz (XY plane): Mz(x) = Mzi - Vyi*x - ...
     let Mz = Mzi - Vyi * x;
@@ -139,6 +147,9 @@ export function generateDiagram(
     }
     for (const pl of yPoints) {
       if (pl.type === 'point' && x >= pl.a) Mz -= pl.value * (x - pl.a);
+    }
+    for (const cmq of cmqLoads) {
+      Mz += computeCMQMomentDiagramCorrection(cmq, x, L).Mz;
     }
 
     // Displacement interpolation
