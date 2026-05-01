@@ -92,6 +92,8 @@ export class ThreeApp {
   private deformationAnimationFactor = 1;
   private lastAnimationRebuildFactor = 1;
   private diagramScale = 1;
+  private gridSnap = true;
+  private gridSize = 1;
   private selectedNodeIds: ReadonlySet<string> = new Set();
   private selectedMemberIds: ReadonlySet<string> = new Set();
   private isDark = false;
@@ -231,6 +233,14 @@ export class ThreeApp {
   setDiagramScale(scale: number): void {
     this.diagramScale = scale;
     this.rebuildResults();
+  }
+
+  setGridSnap(value: boolean): void {
+    this.gridSnap = value;
+  }
+
+  setGridSize(value: number): void {
+    this.gridSize = Math.max(value, 0.001);
   }
 
   setShowNodeLabels(v: boolean): void { this.showNodeLabels = v; }
@@ -928,7 +938,16 @@ export class ThreeApp {
     const target = new THREE.Vector3();
     const hit = raycaster.ray.intersectPlane(plane, target);
     if (!hit) return null;
-    return { x: Math.round(target.x), y: Math.round(target.y), z: planeZ };
+    return {
+      x: this.snapCoordinate(target.x),
+      y: this.snapCoordinate(target.y),
+      z: planeZ,
+    };
+  }
+
+  private snapCoordinate(value: number): number {
+    if (!this.gridSnap) return value;
+    return Math.round(value / this.gridSize) * this.gridSize;
   }
 
   private handleAddNode(x: number, y: number): void {

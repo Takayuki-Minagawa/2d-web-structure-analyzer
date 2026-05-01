@@ -54,6 +54,14 @@ export type AnalysisModeUpdateResult =
   | { ok: true }
   | { ok: false; error: string; nodeIds: string[] };
 
+export type SelectionCloneResult = {
+  nodeIds: string[];
+  memberIds: string[];
+};
+
+type CoordinateAxis = 'x' | 'y' | 'z';
+type CoordinateOffset = { x: number; y: number; z: number };
+
 function normalizeProjectModel(model: ProjectModel): ProjectModel {
   const loadCases = getLoadCases(model);
   const loadCaseIds = new Set(loadCases.map((loadCase) => loadCase.id));
@@ -150,6 +158,8 @@ interface ProjectState {
   addMember: (ni: string, nj: string) => string;
   updateMember: (id: string, updates: Partial<Pick<Member, 'sectionId' | 'codeAngle' | 'torsionRestraint'>>) => void;
   removeMember: (id: string) => void;
+  duplicateSelection: (nodeIds: string[], memberIds: string[], offset: CoordinateOffset, copies?: number) => SelectionCloneResult;
+  mirrorSelection: (nodeIds: string[], memberIds: string[], axis: CoordinateAxis) => SelectionCloneResult;
 
   // Material operations
   addMaterial: (mat: Omit<Material, 'id'>) => string;
@@ -310,6 +320,138 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       },
       isResultStale: true,
     }));
+  },
+
+  duplicateSelection: (nodeIds, memberIds, offset, copies = 1) => {
+    let result: SelectionCloneResult = { nodeIds: [], memberIds: [] };
+    const copyCount = Math.max(1, Math.floor(copies));
+    set((s) => {
+      const selectedNodeIds = new Set(nodeIds);
+      const selectedMemberIds = new Set(memberIds);
+      for (const member of s.model.members) {
+        if (!selectedMemberIds.has(member.id)) continue;
+        selectedNodeIds.add(member.ni);
+        selectedNodeIds.add(member.nj);
+      }
+
+      const sourceNodes = s.model.nodes.filter((node) => selectedNodeIds.has(node.id));
+      const sourceMembers = s.model.members.filter((member) =>
+        selectedMemberIds.has(member.id) &&
+        selectedNodeIds.has(member.ni) &&
+        selectedNodeIds.has(member.nj)
+      );
+      if (sourceNodes.length === 0) return {};
+
+      const newNodes: StructuralNode[] = [];
+      const newMembers: Member[] = [];
+      const newNodeIds: string[] = [];
+      const newMemberIds: string[] = [];
+      const mode = getAnalysisMode(s.model);
+
+      for (let copyIndex = 1; copyIndex <= copyCount; copyIndex++) {
+        const nodeIdMap = new Map<string, string>();
+        for (const node of sourceNodes) {
+          const id = generateId();
+          nodeIdMap.set(node.id, id);
+          newNodeIds.push(id);
+          newNodes.push(lockNodeToAnalysisPlane({
+            ...node,
+            id,
+            x: node.x + offset.x * copyIndex,
+            y: node.y + offset.y * copyIndex,
+            z: node.z + offset.z * copyIndex,
+            restraint: { ...node.restraint },
+          }, mode));
+        }
+        for (const member of sourceMembers) {
+          const ni = nodeIdMap.get(member.ni);
+          const nj = nodeIdMap.get(member.nj);
+          if (!ni || !nj) continue;
+          const id = generateId();
+          newMemberIds.push(id);
+          newMembers.push({
+            ...member,
+            id,
+            ni,
+            nj,
+            iSprings: { ...member.iSprings },
+            jSprings: { ...member.jSprings },
+          });
+        }
+      }
+
+      result = { nodeIds: newNodeIds, memberIds: newMemberIds };
+      return {
+        model: {
+          ...s.model,
+          nodes: [...s.model.nodes, ...newNodes],
+          members: [...s.model.members, ...newMembers],
+        },
+        isResultStale: true,
+      };
+    });
+    return result;
+  },
+
+  mirrorSelection: (nodeIds, memberIds, axis) => {
+    let result: SelectionCloneResult = { nodeIds: [], memberIds: [] };
+    set((s) => {
+      const selectedNodeIds = new Set(nodeIds);
+      const selectedMemberIds = new Set(memberIds);
+      for (const member of s.model.members) {
+        if (!selectedMemberIds.has(member.id)) continue;
+        selectedNodeIds.add(member.ni);
+        selectedNodeIds.add(member.nj);
+      }
+
+      const sourceNodes = s.model.nodes.filter((node) => selectedNodeIds.has(node.id));
+      const sourceMembers = s.model.members.filter((member) =>
+        selectedMemberIds.has(member.id) &&
+        selectedNodeIds.has(member.ni) &&
+        selectedNodeIds.has(member.nj)
+      );
+      if (sourceNodes.length === 0) return {};
+
+      const nodeIdMap = new Map<string, string>();
+      const mode = getAnalysisMode(s.model);
+      const newNodes = sourceNodes.map((node) => {
+        const id = generateId();
+        nodeIdMap.set(node.id, id);
+        return lockNodeToAnalysisPlane({
+          ...node,
+          id,
+          [axis]: -node[axis],
+          restraint: { ...node.restraint },
+        }, mode);
+      });
+      const newMembers = sourceMembers.flatMap((member) => {
+        const ni = nodeIdMap.get(member.ni);
+        const nj = nodeIdMap.get(member.nj);
+        if (!ni || !nj) return [];
+        return [{
+          ...member,
+          id: generateId(),
+          ni,
+          nj,
+          iSprings: { ...member.iSprings },
+          jSprings: { ...member.jSprings },
+        }];
+      });
+
+      result = {
+        nodeIds: newNodes.map((node) => node.id),
+        memberIds: newMembers.map((member) => member.id),
+      };
+      return {
+        model: {
+          ...s.model,
+          nodes: [...s.model.nodes, ...newNodes],
+          members: [...s.model.members, ...newMembers],
+        },
+        isResultStale: true,
+      };
+    });
+    return result;
   },
 
   addMaterial: (mat) => {
