@@ -104,6 +104,8 @@ const ja = {
   'results.member': '部材',
   'results.coupledShared': '連成',
   'results.coupledReactionNote': '* 連成された支持の合算反力は代表行にのみ表示しています。',
+  'results.diagnostics': '診断候補',
+  'results.diagnosticSuggestion': '対応: ',
 
   // Help dialog
   'help.title': '操作マニュアル',
@@ -268,6 +270,8 @@ const en: Record<keyof typeof ja, string> = {
   'results.member': 'Member',
   'results.coupledShared': 'Coupled',
   'results.coupledReactionNote': '* Shared coupled-support reactions are shown only on one representative row.',
+  'results.diagnostics': 'Diagnostic candidates',
+  'results.diagnosticSuggestion': 'Fix: ',
 
   'help.title': 'Operation Manual',
   'help.close': 'Close',

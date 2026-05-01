@@ -248,9 +248,22 @@ export interface AnalysisOutput {
   warnings: string[];
 }
 
+export type DofName = 'ux' | 'uy' | 'uz' | 'rx' | 'ry' | 'rz';
+
+export interface StabilityDiagnostic {
+  kind: 'singular-pivot' | 'zero-stiffness-dof' | 'released-member';
+  message: string;
+  suggestion: string;
+  nodeId?: NodeId;
+  elementId?: MemberId;
+  dof?: DofName;
+  dofIndex?: number;
+}
+
 export interface AnalysisError {
   type: 'validation' | 'singular' | 'numerical';
   message: string;
   elementId?: string;
   nodeId?: string;
+  diagnostics?: StabilityDiagnostic[];
 }

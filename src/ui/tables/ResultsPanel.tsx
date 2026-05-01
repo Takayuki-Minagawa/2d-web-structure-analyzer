@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useProjectStore } from '../../state/projectStore';
 import { useT } from '../../i18n';
-import type { ProjectModel } from '../../core/model/types';
+import type { AnalysisError, ProjectModel, StabilityDiagnostic } from '../../core/model/types';
 import { buildEffectiveReactionRows } from './reactionRows';
 
 type TabId = 'displacements' | 'reactions' | 'endForces';
@@ -22,7 +22,7 @@ export const ResultsPanel: React.FC = () => {
   if (error) {
     return (
       <div className="results-panel">
-        <div className="error-text">{error.message}</div>
+        <AnalysisErrorDetails error={error} />
       </div>
     );
   }
@@ -102,6 +102,45 @@ export const ResultsPanel: React.FC = () => {
           ))}
         </div>
       )}
+    </div>
+  );
+};
+
+const AnalysisErrorDetails: React.FC<{ error: AnalysisError }> = ({ error }) => {
+  const t = useT();
+  const diagnostics = error.diagnostics ?? [];
+
+  return (
+    <div className="analysis-error">
+      <div className="error-text">{error.message}</div>
+      {diagnostics.length > 0 && (
+        <div className="diagnostics-list">
+          <div className="diagnostics-title">{t('results.diagnostics')}</div>
+          {diagnostics.map((diagnostic, index) => (
+            <DiagnosticItem key={`${diagnostic.kind}-${index}`} diagnostic={diagnostic} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DiagnosticItem: React.FC<{ diagnostic: StabilityDiagnostic }> = ({ diagnostic }) => {
+  const t = useT();
+  const meta = [
+    diagnostic.nodeId ? `${t('results.node')} ${diagnostic.nodeId}` : null,
+    diagnostic.elementId ? `${t('results.member')} ${diagnostic.elementId}` : null,
+    diagnostic.dof ? `DOF ${diagnostic.dof}` : null,
+  ].filter((item): item is string => item !== null);
+
+  return (
+    <div className="diagnostic-item">
+      <div>{diagnostic.message}</div>
+      {meta.length > 0 && <div className="diagnostic-meta">{meta.join(' / ')}</div>}
+      <div className="diagnostic-suggestion">
+        <span>{t('results.diagnosticSuggestion')}</span>
+        {diagnostic.suggestion}
+      </div>
     </div>
   );
 };
