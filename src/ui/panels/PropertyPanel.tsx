@@ -4,7 +4,11 @@ import { useSelectionStore } from '../../state/selectionStore';
 import { useViewStore } from '../../state/viewStore';
 import { useT } from '../../i18n';
 import type { StructuralNode, Member, NodalLoad, MemberLoad, AnalysisMode } from '../../core/model/types';
-import { getAnalysisMode, XZ_2D_MODE } from '../../core/model/analysisMode';
+import {
+  findNodesOffXzPlane,
+  getAnalysisMode,
+  XZ_2D_MODE,
+} from '../../core/model/analysisMode';
 
 /** Distributive Omit that works correctly with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -47,6 +51,7 @@ export const PropertyPanel: React.FC = () => {
   return (
     <div className="property-panel">
       <h3>{t('prop.title')}</h3>
+      <AnalysisModeEditor />
 
       {selectedNodes.length === 1 && (
         <NodeProperties
@@ -64,12 +69,18 @@ export const PropertyPanel: React.FC = () => {
       {selectedMembers.length === 1 && (
         <MemberProperties
           member={selectedMembers[0]!}
+          analysisMode={analysisMode}
           model={model}
           memberLoads={model.memberLoads.filter((l) => l.memberId === selectedMembers[0]!.id)}
           onUpdate={updateMember}
           onDelete={removeMember}
           onAddLoad={(memberId) =>
-            addMemberLoad({ memberId, type: 'udl', direction: 'localY', value: -5 })
+            addMemberLoad({
+              memberId,
+              type: 'udl',
+              direction: analysisMode === XZ_2D_MODE ? 'localZ' : 'localY',
+              value: -5,
+            })
           }
           onUpdateLoad={updateMemberLoad}
           onRemoveLoad={removeMemberLoad}
@@ -78,7 +89,6 @@ export const PropertyPanel: React.FC = () => {
 
       {selectedNodes.length === 0 && selectedMembers.length === 0 && (
         <>
-          <AnalysisModeEditor />
           <MaterialsEditor />
           <SectionsEditor />
           <CouplingsEditor />
@@ -186,12 +196,18 @@ const AnalysisModeEditor: React.FC = () => {
   const t = useT();
   const mode = getAnalysisMode(model);
 
+  React.useEffect(() => {
+    if (error && findNodesOffXzPlane(model).length === 0) {
+      setError(null);
+    }
+  }, [error, model]);
+
   return (
     <div className="prop-group">
       <div className="prop-title">{t('prop.analysisMode')}</div>
       <div className="prop-row">
-        <label>{t('prop.analysisMode')}</label>
         <select
+          aria-label={t('prop.analysisMode')}
           value={mode}
           onChange={(e) => {
             const result = setAnalysisMode(e.target.value as AnalysisMode);
@@ -209,6 +225,7 @@ const AnalysisModeEditor: React.FC = () => {
 
 const MemberProperties: React.FC<{
   member: Member;
+  analysisMode: AnalysisMode;
   model: import('../../core/model/types').ProjectModel;
   memberLoads: MemberLoad[];
   onUpdate: (id: string, u: Partial<Pick<Member, 'sectionId' | 'codeAngle'>>) => void;
@@ -216,7 +233,7 @@ const MemberProperties: React.FC<{
   onAddLoad: (memberId: string) => void;
   onUpdateLoad: (id: string, updates: Partial<DistributiveOmit<MemberLoad, 'id'>>) => void;
   onRemoveLoad: (id: string) => void;
-}> = ({ member, model, memberLoads, onUpdate, onDelete, onAddLoad, onUpdateLoad, onRemoveLoad }) => {
+}> = ({ member, analysisMode, model, memberLoads, onUpdate, onDelete, onAddLoad, onUpdateLoad, onRemoveLoad }) => {
   const t = useT();
   const ni = model.nodes.find((n) => n.id === member.ni);
   const nj = model.nodes.find((n) => n.id === member.nj);
@@ -282,7 +299,7 @@ const MemberProperties: React.FC<{
                   <label>{t('prop.loadDirection')}</label>
                   <select value={load.direction}
                     onChange={(e) => onUpdateLoad(load.id, { direction: e.target.value as 'localX' | 'localY' | 'localZ' })}>
-                    <option value="localY">localY</option>
+                    <option value="localY" disabled={analysisMode === XZ_2D_MODE}>localY</option>
                     <option value="localZ">localZ</option>
                     <option value="localX">localX</option>
                   </select>

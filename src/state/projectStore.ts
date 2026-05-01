@@ -41,6 +41,7 @@ export type AnalysisModeUpdateResult =
   | { ok: false; error: string; nodeIds: string[] };
 
 function normalizeProjectModel(model: ProjectModel): ProjectModel {
+  // Idempotently fills defaults for older persisted/imported project files.
   return {
     ...model,
     analysisMode: model.analysisMode ?? DEFAULT_ANALYSIS_MODE,
@@ -152,13 +153,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
   addNode: (x, y, z) => {
     const id = generateId();
-    const currentModel = get().model;
     set((s) => ({
       model: {
         ...s.model,
         nodes: [
           ...s.model.nodes,
-          { id, x, y: isXz2dMode(currentModel) ? 0 : y, z, restraint: { ...DEFAULT_RESTRAINT } },
+          { id, x, y: isXz2dMode(s.model) ? 0 : y, z, restraint: { ...DEFAULT_RESTRAINT } },
         ],
       },
       isResultStale: true,

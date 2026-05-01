@@ -64,6 +64,23 @@ describe('projectStore basic operations', () => {
     expect(added!.y).toBe(0);
   });
 
+  it('preserves user restraint values when toggling back from 2D X-Z to 3D', () => {
+    const state = useProjectStore.getState();
+    const id = state.addNode(0, 0, 0);
+
+    let result = useProjectStore.getState().setAnalysisMode('xz2d');
+    expect(result.ok).toBe(true);
+    expect(useProjectStore.getState().model.nodes.find(n => n.id === id)!.restraint.uy).toBe(false);
+    expect(useProjectStore.getState().model.nodes.find(n => n.id === id)!.restraint.rx).toBe(false);
+    expect(useProjectStore.getState().model.nodes.find(n => n.id === id)!.restraint.rz).toBe(false);
+
+    result = useProjectStore.getState().setAnalysisMode('3d');
+    expect(result.ok).toBe(true);
+    expect(useProjectStore.getState().model.nodes.find(n => n.id === id)!.restraint.uy).toBe(false);
+    expect(useProjectStore.getState().model.nodes.find(n => n.id === id)!.restraint.rx).toBe(false);
+    expect(useProjectStore.getState().model.nodes.find(n => n.id === id)!.restraint.rz).toBe(false);
+  });
+
   it('imports FrameJson format', () => {
     const frameJson = JSON.stringify({
       title: "Test",

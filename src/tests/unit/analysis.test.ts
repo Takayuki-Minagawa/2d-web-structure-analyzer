@@ -207,6 +207,42 @@ describe('2D X-Z frame analysis mode', () => {
     const errors = validateModel(model);
     expect(errors.some((error) => error.message.includes('Y座標が0'))).toBe(true);
   });
+
+  it('rejects unsupported member code angles in X-Z 2D mode', () => {
+    const model = buildModel();
+    model.members[0] = { ...model.members[0]!, codeAngle: 90 };
+
+    const errors = validateModel(model);
+    expect(errors.some((error) => error.message.includes('コード角'))).toBe(true);
+  });
+
+  it('rejects out-of-plane nodal load components in X-Z 2D mode', () => {
+    const model = buildModel();
+    model.nodalLoads[0] = { ...model.nodalLoads[0]!, fy: 1, mx: 2, mz: 3 };
+
+    const errors = validateModel(model);
+    expect(errors.some((error) => error.message.includes('面外成分'))).toBe(true);
+  });
+
+  it('rejects out-of-plane member load components in X-Z 2D mode', () => {
+    const model = buildModel();
+    model.nodalLoads = [];
+    model.memberLoads = [
+      { id: 'ml1', memberId: 'm1', type: 'udl', direction: 'localY', value: -1 },
+      {
+        id: 'cmq1',
+        memberId: 'm1',
+        type: 'cmq',
+        iQx: 0, iQy: 1, iQz: 0, iMy: 0, iMz: 2,
+        jQx: 0, jQy: 0, jQz: 0, jMy: 0, jMz: 0,
+        moy: 0, moz: 3,
+      },
+    ];
+
+    const errors = validateModel(model);
+    expect(errors.some((error) => error.message.includes('localY'))).toBe(true);
+    expect(errors.some((error) => error.message.includes('CMQ'))).toBe(true);
+  });
 });
 
 describe('3D Torsion member', () => {
