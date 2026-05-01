@@ -3,7 +3,8 @@ import { useProjectStore } from '../../state/projectStore';
 import { useSelectionStore } from '../../state/selectionStore';
 import { useViewStore } from '../../state/viewStore';
 import { useT } from '../../i18n';
-import type { StructuralNode, Member, NodalLoad, MemberLoad } from '../../core/model/types';
+import type { StructuralNode, Member, NodalLoad, MemberLoad, AnalysisMode } from '../../core/model/types';
+import { getAnalysisMode, XZ_2D_MODE } from '../../core/model/analysisMode';
 
 /** Distributive Omit that works correctly with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -41,6 +42,7 @@ export const PropertyPanel: React.FC = () => {
 
   const selectedNodes = model.nodes.filter((n) => selectedNodeIds.has(n.id));
   const selectedMembers = model.members.filter((m) => selectedMemberIds.has(m.id));
+  const analysisMode = getAnalysisMode(model);
 
   return (
     <div className="property-panel">
@@ -49,6 +51,7 @@ export const PropertyPanel: React.FC = () => {
       {selectedNodes.length === 1 && (
         <NodeProperties
           node={selectedNodes[0]!}
+          analysisMode={analysisMode}
           nodalLoads={model.nodalLoads.filter((l) => l.nodeId === selectedNodes[0]!.id)}
           onUpdate={updateNode}
           onDelete={removeNode}
@@ -75,6 +78,7 @@ export const PropertyPanel: React.FC = () => {
 
       {selectedNodes.length === 0 && selectedMembers.length === 0 && (
         <>
+          <AnalysisModeEditor />
           <MaterialsEditor />
           <SectionsEditor />
           <CouplingsEditor />
@@ -115,13 +119,14 @@ export const PropertyPanel: React.FC = () => {
 
 const NodeProperties: React.FC<{
   node: StructuralNode;
+  analysisMode: AnalysisMode;
   nodalLoads: NodalLoad[];
   onUpdate: (id: string, u: Partial<Pick<StructuralNode, 'x' | 'y' | 'z' | 'restraint'>>) => void;
   onDelete: (id: string) => void;
   onAddLoad: (nodeId: string) => void;
   onUpdateLoad: (id: string, updates: Partial<Omit<NodalLoad, 'id'>>) => void;
   onRemoveLoad: (id: string) => void;
-}> = ({ node, nodalLoads, onUpdate, onDelete, onAddLoad, onUpdateLoad, onRemoveLoad }) => {
+}> = ({ node, analysisMode, nodalLoads, onUpdate, onDelete, onAddLoad, onUpdateLoad, onRemoveLoad }) => {
   const t = useT();
   const restraintKeys = ['ux', 'uy', 'uz', 'rx', 'ry', 'rz'] as const;
   const restraintLabels = {
@@ -132,13 +137,18 @@ const NodeProperties: React.FC<{
   return (
     <div className="prop-group">
       <div className="prop-title">{t('prop.node')} {node.id.substring(0, 5)}</div>
-      {(['x', 'y', 'z'] as const).map((axis) => (
-        <div className="prop-row" key={axis}>
-          <label>{axis.toUpperCase()}:</label>
-          <input type="number" value={node[axis]} step="1"
-            onChange={(e) => onUpdate(node.id, { [axis]: Number(e.target.value) })} />
-        </div>
-      ))}
+      {(['x', 'y', 'z'] as const).map((axis) => {
+        const yLocked = analysisMode === XZ_2D_MODE && axis === 'y';
+        return (
+          <div className="prop-row" key={axis}>
+            <label>{axis.toUpperCase()}:</label>
+            <input type="number" value={node[axis]} step="1"
+              disabled={yLocked}
+              title={yLocked ? t('prop.yLockedXz2d') : undefined}
+              onChange={(e) => onUpdate(node.id, { [axis]: Number(e.target.value) })} />
+          </div>
+        );
+      })}
       <div className="prop-title">{t('prop.restraints')}</div>
       {restraintKeys.map((key) => (
         <label className="checkbox-label" key={key}>
@@ -165,6 +175,34 @@ const NodeProperties: React.FC<{
         <button onClick={() => onAddLoad(node.id)}>{t('prop.addLoad')}</button>
         <button className="danger" onClick={() => onDelete(node.id)}>{t('prop.delete')}</button>
       </div>
+    </div>
+  );
+};
+
+const AnalysisModeEditor: React.FC = () => {
+  const model = useProjectStore((s) => s.model);
+  const setAnalysisMode = useProjectStore((s) => s.setAnalysisMode);
+  const [error, setError] = React.useState<string | null>(null);
+  const t = useT();
+  const mode = getAnalysisMode(model);
+
+  return (
+    <div className="prop-group">
+      <div className="prop-title">{t('prop.analysisMode')}</div>
+      <div className="prop-row">
+        <label>{t('prop.analysisMode')}</label>
+        <select
+          value={mode}
+          onChange={(e) => {
+            const result = setAnalysisMode(e.target.value as AnalysisMode);
+            setError(result.ok ? null : result.error);
+          }}
+        >
+          <option value="3d">{t('prop.analysisMode3d')}</option>
+          <option value="xz2d">{t('prop.analysisModeXz2d')}</option>
+        </select>
+      </div>
+      {error && <div className="error-text">{error}</div>}
     </div>
   );
 };

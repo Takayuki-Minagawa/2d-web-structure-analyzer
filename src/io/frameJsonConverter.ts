@@ -202,6 +202,7 @@ export function convertFrameJson(
 
   return {
     title: doc.title || 'Imported Model',
+    analysisMode: '3d',
     nodes,
     materials,
     sections,

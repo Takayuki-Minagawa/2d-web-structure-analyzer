@@ -1,7 +1,25 @@
 import type { ProjectModel, AnalysisError } from './types';
+import {
+  findNodesOffXzPlane,
+  getAnalysisMode,
+  getEffectiveRestraint,
+  XZ_2D_MODE,
+} from './analysisMode';
 
 export function validateModel(model: ProjectModel): AnalysisError[] {
   const errors: AnalysisError[] = [];
+  const analysisMode = getAnalysisMode(model);
+
+  if (analysisMode === XZ_2D_MODE) {
+    const offPlaneNodes = findNodesOffXzPlane(model);
+    if (offPlaneNodes.length > 0) {
+      errors.push({
+        type: 'validation',
+        message: `2D X-Z平面モードでは全節点のY座標が0である必要があります。対象節点: ${offPlaneNodes.map((n) => n.id).join(', ')}`,
+        nodeId: offPlaneNodes[0]!.id,
+      });
+    }
+  }
 
   // Check: at least one node
   if (model.nodes.length === 0) {
@@ -128,9 +146,12 @@ export function validateModel(model: ProjectModel): AnalysisError[] {
   }
 
   // Check: constraint sufficiency (3 translational directions)
-  const hasUx = model.nodes.some((n) => n.restraint.ux);
-  const hasUy = model.nodes.some((n) => n.restraint.uy);
-  const hasUz = model.nodes.some((n) => n.restraint.uz);
+  const effectiveRestraints = model.nodes.map((n) =>
+    getEffectiveRestraint(n.restraint, analysisMode)
+  );
+  const hasUx = effectiveRestraints.some((r) => r.ux);
+  const hasUy = effectiveRestraints.some((r) => r.uy);
+  const hasUz = effectiveRestraints.some((r) => r.uz);
   if (!hasUx || !hasUy || !hasUz) {
     errors.push({
       type: 'validation',
