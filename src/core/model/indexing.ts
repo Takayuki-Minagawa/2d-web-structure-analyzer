@@ -8,6 +8,10 @@ import type {
   MemberId,
 } from './types';
 import { getAnalysisMode, getEffectiveRestraint } from './analysisMode';
+import {
+  collectTorsionRestraintSourceDofs,
+  formatUnsupportedTorsionRestraintMessage,
+} from './torsionRestraint';
 
 const RIGID: EndRelease = { type: 'rigid', kTheta: 0 };
 const PIN: EndRelease = { type: 'pin', kTheta: 0 };
@@ -86,6 +90,11 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
   const nodeIdToIndex = new Map<NodeId, number>();
   const memberIdToIndex = new Map<MemberId, number>();
   const analysisMode = getAnalysisMode(model);
+  const torsionDofs = collectTorsionRestraintSourceDofs(model);
+  if (torsionDofs.unsupportedMembers.length > 0) {
+    throw new Error(formatUnsupportedTorsionRestraintMessage(torsionDofs.unsupportedMembers[0]!.id));
+  }
+  const extraFixedDofs = torsionDofs.entries.map((entry) => entry.sourceDof);
 
   // Build spring lookup
   const springMap = new Map(
@@ -200,5 +209,6 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
     nodeIdToIndex,
     memberIdToIndex,
     dofMap,
+    extraFixedDofs,
   };
 }

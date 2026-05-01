@@ -23,6 +23,10 @@ import {
   getAnalysisMode,
   isXz2dMode,
 } from '../core/model/analysisMode';
+import {
+  DEFAULT_TORSION_RESTRAINT,
+  normalizeTorsionRestraint,
+} from '../core/model/torsionRestraint';
 
 /** Distributive Omit that works correctly with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -46,6 +50,12 @@ function normalizeProjectModel(model: ProjectModel): ProjectModel {
     ...model,
     analysisMode: model.analysisMode ?? DEFAULT_ANALYSIS_MODE,
     springs: model.springs ?? [],
+    members: (model.members ?? []).map((member) => ({
+      ...member,
+      iSprings: member.iSprings ?? { x: 0, y: 0, z: 0 },
+      jSprings: member.jSprings ?? { x: 0, y: 0, z: 0 },
+      torsionRestraint: normalizeTorsionRestraint(member.torsionRestraint),
+    })),
     couplings: model.couplings ?? [],
     nodalLoads: model.nodalLoads ?? [],
     memberLoads: model.memberLoads ?? [],
@@ -101,7 +111,7 @@ interface ProjectState {
 
   // Member operations
   addMember: (ni: string, nj: string) => string;
-  updateMember: (id: string, updates: Partial<Pick<Member, 'sectionId' | 'codeAngle'>>) => void;
+  updateMember: (id: string, updates: Partial<Pick<Member, 'sectionId' | 'codeAngle' | 'torsionRestraint'>>) => void;
   removeMember: (id: string) => void;
 
   // Material operations
@@ -211,6 +221,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           codeAngle: 0,
           iSprings: { x: 0, y: 0, z: 0 },
           jSprings: { x: 0, y: 0, z: 0 },
+          torsionRestraint: DEFAULT_TORSION_RESTRAINT,
         }],
       },
       isResultStale: true,
@@ -223,7 +234,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       model: {
         ...s.model,
         members: s.model.members.map((m) =>
-          m.id === id ? { ...m, ...updates } : m
+          m.id === id
+            ? {
+                ...m,
+                ...updates,
+                torsionRestraint: updates.torsionRestraint !== undefined
+                  ? normalizeTorsionRestraint(updates.torsionRestraint)
+                  : normalizeTorsionRestraint(m.torsionRestraint),
+              }
+            : m
         ),
       },
       isResultStale: true,

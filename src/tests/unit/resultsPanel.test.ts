@@ -83,4 +83,37 @@ describe('buildEffectiveReactionRows', () => {
       isRepresentative: true,
     });
   });
+
+  it('shows member twist-restraint reactions', () => {
+    const model = createBaseModel();
+    model.nodes = [
+      { id: 'n0', x: 0, y: 0, z: 0, restraint: FREE },
+      { id: 'n1', x: 4, y: 0, z: 0, restraint: FREE },
+    ];
+    model.members = [
+      {
+        id: 'm1',
+        ni: 'n0',
+        nj: 'n1',
+        sectionId: 'sec1',
+        codeAngle: 0,
+        iSprings: { x: 0, y: 0, z: 0 },
+        jSprings: { x: 0, y: 0, z: 0 },
+        torsionRestraint: 'i',
+      },
+    ];
+
+    const reactions = new Array(model.nodes.length * 6).fill(0);
+    reactions[3] = -12;
+
+    const { rows } = buildEffectiveReactionRows(model, reactions);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.nodeId).toBe('n0');
+    expect(rows[0]!.cells[3]).toEqual({
+      value: -12,
+      isShared: false,
+      isRepresentative: true,
+    });
+  });
 });

@@ -38,6 +38,18 @@ describe('projectStore basic operations', () => {
     expect(member).toBeDefined();
     expect(member!.codeAngle).toBe(0);
     expect(member!.iSprings).toEqual({ x: 0, y: 0, z: 0 });
+    expect(member!.torsionRestraint).toBe('none');
+  });
+
+  it('updates member torsion restraint', () => {
+    const state = useProjectStore.getState();
+    const n1 = state.addNode(0, 0, 0);
+    const n2 = state.addNode(10, 0, 0);
+    const mid = useProjectStore.getState().addMember(n1, n2);
+
+    useProjectStore.getState().updateMember(mid, { torsionRestraint: 'i' });
+    const member = useProjectStore.getState().model.members.find(m => m.id === mid);
+    expect(member!.torsionRestraint).toBe('i');
   });
 
   it('rejects 2D X-Z mode when nodes are off the X-Z plane', () => {

@@ -25,6 +25,10 @@ export function partitionDofs(model: IndexedModel): {
     }
   }
 
+  for (const dof of model.extraFixedDofs) {
+    if (dof >= 0 && dof < model.dofCount) isFixed[dof] = 1;
+  }
+
   // Propagate slave fixity to master DOFs:
   // if a slave DOF is fixed, the master DOF must also be fixed.
   for (let dof = 0; dof < model.dofCount; dof++) {

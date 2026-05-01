@@ -6,6 +6,10 @@ import {
   getEffectiveRestraint,
   XZ_2D_MODE,
 } from './analysisMode';
+import {
+  findMembersWithUnsupportedTorsionRestraint,
+  formatUnsupportedTorsionRestraintMessage,
+} from './torsionRestraint';
 
 const LOAD_TOLERANCE = 1e-9;
 
@@ -117,6 +121,14 @@ export function validateModel(model: ProjectModel): AnalysisError[] {
   }
 
   const nodeIds = new Set(model.nodes.map((n) => n.id));
+  const unsupportedTorsionMembers = findMembersWithUnsupportedTorsionRestraint(model);
+  for (const member of unsupportedTorsionMembers) {
+    errors.push({
+      type: 'validation',
+      message: formatUnsupportedTorsionRestraintMessage(member.id),
+      elementId: member.id,
+    });
+  }
 
   // Check: members
   for (const m of model.members) {

@@ -3,7 +3,7 @@ import { useProjectStore } from '../../state/projectStore';
 import { useSelectionStore } from '../../state/selectionStore';
 import { useViewStore } from '../../state/viewStore';
 import { useT } from '../../i18n';
-import type { StructuralNode, Member, NodalLoad, MemberLoad, AnalysisMode } from '../../core/model/types';
+import type { StructuralNode, Member, NodalLoad, MemberLoad, AnalysisMode, TorsionRestraintEnd } from '../../core/model/types';
 import {
   findNodesOffXzPlane,
   getAnalysisMode,
@@ -228,7 +228,7 @@ const MemberProperties: React.FC<{
   analysisMode: AnalysisMode;
   model: import('../../core/model/types').ProjectModel;
   memberLoads: MemberLoad[];
-  onUpdate: (id: string, u: Partial<Pick<Member, 'sectionId' | 'codeAngle'>>) => void;
+  onUpdate: (id: string, u: Partial<Pick<Member, 'sectionId' | 'codeAngle' | 'torsionRestraint'>>) => void;
   onDelete: (id: string) => void;
   onAddLoad: (memberId: string) => void;
   onUpdateLoad: (id: string, updates: Partial<DistributiveOmit<MemberLoad, 'id'>>) => void;
@@ -256,6 +256,15 @@ const MemberProperties: React.FC<{
         <label>{t('prop.codeAngle')}</label>
         <input type="number" value={member.codeAngle} step="1"
           onChange={(e) => onUpdate(member.id, { codeAngle: Number(e.target.value) })} />
+      </div>
+      <div className="prop-row">
+        <label>{t('prop.torsionRestraint')}</label>
+        <select value={member.torsionRestraint ?? 'none'}
+          onChange={(e) => onUpdate(member.id, { torsionRestraint: e.target.value as TorsionRestraintEnd })}>
+          <option value="none">{t('prop.torsionRestraintNone')}</option>
+          <option value="i">{t('prop.torsionRestraintI')}</option>
+          <option value="j">{t('prop.torsionRestraintJ')}</option>
+        </select>
       </div>
       <div className="prop-title">{t('prop.memberLoads')}</div>
       {memberLoads.length === 0 && <div className="muted">{t('prop.noLoads')}</div>}

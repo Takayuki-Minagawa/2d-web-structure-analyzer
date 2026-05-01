@@ -143,9 +143,9 @@ export const App: React.FC = () => {
       springs: [],
       couplings: [],
       members: [
-        { id: 'm1', ni: 'n1', nj: 'n2', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 } },
-        { id: 'm2', ni: 'n2', nj: 'n3', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 } },
-        { id: 'm3', ni: 'n4', nj: 'n3', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 } },
+        { id: 'm1', ni: 'n1', nj: 'n2', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 }, torsionRestraint: 'none' as const },
+        { id: 'm2', ni: 'n2', nj: 'n3', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 }, torsionRestraint: 'none' as const },
+        { id: 'm3', ni: 'n4', nj: 'n3', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 }, torsionRestraint: 'none' as const },
       ],
       nodalLoads: [
         { id: 'nl1', nodeId: 'n2', fx: 10, fy: 0, fz: 0, mx: 0, my: 0, mz: 0 },
