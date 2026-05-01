@@ -123,13 +123,21 @@ export const App: React.FC = () => {
     const win = window.open(url, '_blank');
     if (!win) {
       URL.revokeObjectURL(url);
+      alert(t('app.popupBlocked'));
       return;
     }
+    let revoked = false;
+    const revokeUrl = () => {
+      if (revoked) return;
+      URL.revokeObjectURL(url);
+      revoked = true;
+    };
     win.addEventListener('load', () => {
       win.print();
-      URL.revokeObjectURL(url);
+      revokeUrl();
     }, { once: true });
-  }, [reportInput]);
+    win.addEventListener('beforeunload', revokeUrl, { once: true });
+  }, [reportInput, t]);
 
   const handleImport = useCallback(() => {
     const input = document.createElement('input');

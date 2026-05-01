@@ -34,6 +34,7 @@ describe('reportExporter', () => {
         displacements: [0, 1, 2, 3, 4, 5],
         reactions: [6, 7, 8, 9, 10, 11],
         elementEndForces: {},
+        diagrams: {},
         warnings: ['Check model'],
       },
       error: null,
@@ -48,6 +49,28 @@ describe('reportExporter', () => {
     const csv = generateCsvReport(input);
     expect(csv).toContain('Analysis target,Dead');
     expect(csv).toContain('n0,0,1.000000,2.000000');
+  });
+
+  it('escapes markdown table delimiters inside cell values', () => {
+    const input = {
+      model: {
+        ...createModel(),
+        nodes: [
+          { ...createModel().nodes[0]!, id: 'n|0' },
+        ],
+      },
+      result: {
+        displacements: [0, 0, 0, 0, 0, 0],
+        reactions: [0, 0, 0, 0, 0, 0],
+        elementEndForces: {},
+        diagrams: {},
+        warnings: [],
+      },
+      error: null,
+      generatedAt: new Date('2026-05-01T00:00:00.000Z'),
+    };
+
+    expect(generateMarkdownReport(input)).toContain('n\\|0');
   });
 
   it('generates printable html that escapes report content', () => {

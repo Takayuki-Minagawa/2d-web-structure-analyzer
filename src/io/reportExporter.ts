@@ -1,16 +1,9 @@
-import type { AnalysisError, ProjectModel } from '../core/model/types';
+import type { AnalysisError, AnalysisResult, ProjectModel } from '../core/model/types';
 import { getActiveLoadTargetName } from '../core/model/loadCases';
-
-export interface ReportResult {
-  displacements: number[];
-  reactions: number[];
-  elementEndForces: Record<string, number[]>;
-  warnings: string[];
-}
 
 export interface ReportInput {
   model: ProjectModel;
-  result: ReportResult | null;
+  result: AnalysisResult | null;
   error: AnalysisError | null;
   generatedAt: Date;
 }
@@ -162,10 +155,14 @@ export function generatePrintableReportHtml(input: ReportInput): string {
 
 function markdownTable(headers: string[], rows: string[][]): string {
   return [
-    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(markdownCell).join(' | ')} |`,
     `| ${headers.map(() => '---').join(' | ')} |`,
-    ...rows.map((row) => `| ${row.join(' | ')} |`),
+    ...rows.map((row) => `| ${row.map(markdownCell).join(' | ')} |`),
   ].join('\n');
+}
+
+function markdownCell(value: string): string {
+  return value.split('\\').join('\\\\').split('|').join('\\|');
 }
 
 function csvRow(row: string[]): string {
