@@ -1,18 +1,11 @@
 import type {
   DofName,
   IndexedModel,
+  ReleasedMemberMode,
   StabilityDiagnostic,
 } from '../model/types';
 
 const DOF_NAMES: DofName[] = ['ux', 'uy', 'uz', 'rx', 'ry', 'rz'];
-const DOF_LABELS: Record<DofName, string> = {
-  ux: 'X方向変位 ux',
-  uy: 'Y方向変位 uy',
-  uz: 'Z方向変位 uz',
-  rx: 'X軸回転 rx',
-  ry: 'Y軸回転 ry',
-  rz: 'Z軸回転 rz',
-};
 const MAX_ZERO_STIFFNESS_DIAGNOSTICS = 6;
 const MAX_RELEASE_DIAGNOSTICS = 4;
 
@@ -35,46 +28,50 @@ export function createSingularStabilityDiagnostics(
 ): StabilityDiagnostic[] {
   const diagnostics: StabilityDiagnostic[] = [];
   const seen = new Set<string>();
+  const suspectNodeIds = new Set<string>();
   const pivotDof = pivotIndex === undefined ? undefined : freeDofs[pivotIndex];
 
+  // Kept defensive in case solver metadata and free DOF ordering diverge later.
   if (pivotDof !== undefined) {
     const desc = describeDof(model, pivotDof);
     if (desc) {
       diagnostics.push({
         kind: 'singular-pivot',
-        message: `特異ピボットは節点 ${desc.nodeId} の ${DOF_LABELS[desc.dof]} に対応します。`,
-        suggestion: 'この自由度に拘束、回転バネ、接続部材、または該当する部材端拘束が不足していないか確認してください。',
         nodeId: desc.nodeId,
         dof: desc.dof,
         dofIndex: desc.dofIndex,
       });
       seen.add(`dof:${desc.dofIndex}`);
+      addRelatedNodeIdsForDof(model, desc.dofIndex, suspectNodeIds);
     }
   }
 
+  let zeroStiffnessDiagnosticCount = 0;
   for (const row of findZeroStiffnessDofs(model, stiffness, freeDofs)) {
     if (seen.has(`dof:${row.sourceDof}`)) continue;
     const desc = describeDof(model, row.sourceDof);
     if (!desc) continue;
     diagnostics.push({
       kind: 'zero-stiffness-dof',
-      message: `節点 ${desc.nodeId} の ${DOF_LABELS[desc.dof]} は自由DOFですが、有効な剛性がほぼありません。`,
-      suggestion: '孤立節点、未接続の回転自由度、両端ピン、または必要な支持条件の抜けを確認してください。',
       nodeId: desc.nodeId,
       dof: desc.dof,
       dofIndex: desc.dofIndex,
     });
     seen.add(`dof:${desc.dofIndex}`);
-    if (diagnostics.filter((d) => d.kind === 'zero-stiffness-dof').length >= MAX_ZERO_STIFFNESS_DIAGNOSTICS) {
+    addRelatedNodeIdsForDof(model, desc.dofIndex, suspectNodeIds);
+    zeroStiffnessDiagnosticCount++;
+    if (zeroStiffnessDiagnosticCount >= MAX_ZERO_STIFFNESS_DIAGNOSTICS) {
       break;
     }
   }
 
-  for (const diagnostic of findBothEndReleaseDiagnostics(model)) {
-    if (diagnostics.filter((d) => d.kind === 'released-member').length >= MAX_RELEASE_DIAGNOSTICS) {
+  let releaseDiagnosticCount = 0;
+  for (const diagnostic of findBothEndReleaseDiagnostics(model, suspectNodeIds)) {
+    if (releaseDiagnosticCount >= MAX_RELEASE_DIAGNOSTICS) {
       break;
     }
     diagnostics.push(diagnostic);
+    releaseDiagnosticCount++;
   }
 
   return diagnostics;
@@ -86,6 +83,21 @@ function describeDof(model: IndexedModel, sourceDof: number): DofDescriptor | nu
   const node = model.nodes[nodeIndex];
   if (!node || !dof) return null;
   return { nodeId: node.id, dof, dofIndex: sourceDof };
+}
+
+function addRelatedNodeIdsForDof(
+  model: IndexedModel,
+  sourceDof: number,
+  nodeIds: Set<string>
+): void {
+  const sourceNode = model.nodes[Math.floor(sourceDof / 6)];
+  if (sourceNode) nodeIds.add(sourceNode.id);
+
+  for (let dof = 0; dof < model.dofCount; dof++) {
+    if (model.dofMap[dof] !== sourceDof) continue;
+    const coupledNode = model.nodes[Math.floor(dof / 6)];
+    if (coupledNode) nodeIds.add(coupledNode.id);
+  }
 }
 
 function findZeroStiffnessDofs(
@@ -118,26 +130,35 @@ function freeRowAbsSum(
   return sum;
 }
 
-function findBothEndReleaseDiagnostics(model: IndexedModel): StabilityDiagnostic[] {
+function findBothEndReleaseDiagnostics(
+  model: IndexedModel,
+  suspectNodeIds: Set<string>
+): StabilityDiagnostic[] {
+  if (suspectNodeIds.size === 0) return [];
+
   const diagnostics: StabilityDiagnostic[] = [];
   for (const member of model.members) {
-    const releasedLabels: string[] = [];
+    const nodeI = model.nodes[member.ni];
+    const nodeJ = model.nodes[member.nj];
+    if (!nodeI || !nodeJ) continue;
+    if (!suspectNodeIds.has(nodeI.id) && !suspectNodeIds.has(nodeJ.id)) continue;
+
+    const released: ReleasedMemberMode[] = [];
     if (member.releases[0].type === 'pin' && member.releases[3].type === 'pin') {
-      releasedLabels.push('local x ねじり');
+      released.push('localXTwist');
     }
     if (member.releases[1].type === 'pin' && member.releases[4].type === 'pin') {
-      releasedLabels.push('local y 曲げ回転');
+      released.push('localYBending');
     }
     if (member.releases[2].type === 'pin' && member.releases[5].type === 'pin') {
-      releasedLabels.push('local z 曲げ回転');
+      released.push('localZBending');
     }
-    if (releasedLabels.length === 0) continue;
+    if (released.length === 0) continue;
 
     diagnostics.push({
       kind: 'released-member',
-      message: `部材 ${member.id} は ${releasedLabels.join('、')} が両端ピンです。`,
-      suggestion: '片端に回転拘束または回転バネを追加するか、今回追加済みの一端捻り拘束が適用できる部材ではそれを使用してください。',
       elementId: member.id,
+      released,
     });
   }
   return diagnostics;

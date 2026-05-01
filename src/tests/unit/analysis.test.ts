@@ -453,6 +453,78 @@ describe('Stability diagnostics', () => {
       d.elementId === 'm1'
     )).toBe(true);
   });
+
+  it('limits released-member candidates to members connected to suspect DOFs', () => {
+    const model = createBaseModel();
+    model.nodes = [
+      { id: 'n0', x: 0, y: 0, z: 0, restraint: { ux: true, uy: true, uz: true, rx: false, ry: true, rz: true } },
+      { id: 'n1', x: 4, y: 0, z: 0, restraint: { ux: true, uy: true, uz: true, rx: false, ry: true, rz: true } },
+      { id: 'n2', x: 0, y: 5, z: 0, restraint: FIXED },
+      { id: 'n3', x: 4, y: 5, z: 0, restraint: FIXED },
+    ];
+    model.members = [
+      {
+        ...defaultMember('cause', 'n0', 'n1'),
+        iSprings: { x: 2, y: 0, z: 0 },
+        jSprings: { x: 2, y: 0, z: 0 },
+      },
+      {
+        ...defaultMember('unrelated', 'n2', 'n3'),
+        iSprings: { x: 2, y: 0, z: 0 },
+        jSprings: { x: 2, y: 0, z: 0 },
+      },
+    ];
+
+    const indexed = buildIndexedModel(model);
+    let error: AnalysisError | null = null;
+    try {
+      analyzeFrame({ model: indexed });
+    } catch (e) {
+      error = e as AnalysisError;
+    }
+
+    const releasedMemberIds = error?.diagnostics
+      ?.filter((d) => d.kind === 'released-member')
+      .map((d) => d.elementId);
+
+    expect(releasedMemberIds).toContain('cause');
+    expect(releasedMemberIds).not.toContain('unrelated');
+  });
+
+  it('reports the master node when a coupled slave DOF is singular', () => {
+    const model = createBaseModel();
+    model.nodes = [
+      { id: 'master', x: 0, y: 0, z: 0, restraint: { ux: true, uy: true, uz: true, rx: false, ry: true, rz: true } },
+      { id: 'slave', x: 1, y: 0, z: 0, restraint: { ux: true, uy: true, uz: true, rx: false, ry: true, rz: true } },
+      { id: 'fixed', x: 5, y: 0, z: 0, restraint: FIXED },
+    ];
+    model.members = [{
+      ...defaultMember('m1', 'slave', 'fixed'),
+      iSprings: { x: 2, y: 0, z: 0 },
+      jSprings: { x: 2, y: 0, z: 0 },
+    }];
+    model.couplings = [
+      { id: 'c1', masterNodeId: 'master', slaveNodeId: 'slave', ux: false, uy: false, uz: false, rx: true, ry: false, rz: false },
+    ];
+
+    const indexed = buildIndexedModel(model);
+    let error: AnalysisError | null = null;
+    try {
+      analyzeFrame({ model: indexed });
+    } catch (e) {
+      error = e as AnalysisError;
+    }
+
+    expect(error?.diagnostics?.some((d) =>
+      d.kind === 'singular-pivot' &&
+      d.nodeId === 'master' &&
+      d.dof === 'rx'
+    )).toBe(true);
+    expect(error?.diagnostics?.some((d) =>
+      d.kind === 'released-member' &&
+      d.elementId === 'm1'
+    )).toBe(true);
+  });
 });
 
 describe('3D Portal frame: equilibrium check', () => {
