@@ -35,6 +35,8 @@ export const CanvasPanel: React.FC = () => {
   const showLoads = useViewStore((s) => s.showLoads);
   const showSupports = useViewStore((s) => s.showSupports);
   const animateDeformation = useViewStore((s) => s.animateDeformation);
+  const gridSnap = useViewStore((s) => s.gridSnap);
+  const gridSize = useViewStore((s) => s.gridSize);
   const deformationScale = useViewStore((s) => s.deformationScale);
   const diagramScale = useViewStore((s) => s.diagramScale);
 
@@ -192,6 +194,14 @@ export const CanvasPanel: React.FC = () => {
   useEffect(() => {
     appRef.current?.setAnimateDeformation(animateDeformation);
   }, [animateDeformation]);
+
+  useEffect(() => {
+    appRef.current?.setGridSnap(gridSnap);
+  }, [gridSnap]);
+
+  useEffect(() => {
+    appRef.current?.setGridSize(gridSize);
+  }, [gridSize]);
 
   return (
     <div

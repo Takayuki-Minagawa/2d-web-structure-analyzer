@@ -13,6 +13,8 @@ interface ViewState {
   showLoads: boolean;
   showSupports: boolean;
   animateDeformation: boolean;
+  gridSnap: boolean;
+  gridSize: number;
   deformationScale: number;
   diagramScale: number;
   setDisplayMode: (mode: DisplayMode) => void;
@@ -24,6 +26,8 @@ interface ViewState {
   setShowLoads: (v: boolean) => void;
   setShowSupports: (v: boolean) => void;
   setAnimateDeformation: (v: boolean) => void;
+  setGridSnap: (v: boolean) => void;
+  setGridSize: (v: number) => void;
   setDeformationScale: (v: number) => void;
   setDiagramScale: (v: number) => void;
 }
@@ -49,6 +53,8 @@ export const useViewStore = create<ViewState>((set) => ({
   showLoads: true,
   showSupports: true,
   animateDeformation: false,
+  gridSnap: true,
+  gridSize: 1,
   deformationScale: 50,
   diagramScale: 1,
   setDisplayMode: (mode) => set({ displayMode: mode }),
@@ -60,6 +66,8 @@ export const useViewStore = create<ViewState>((set) => ({
   setShowLoads: (v) => set({ showLoads: v }),
   setShowSupports: (v) => set({ showSupports: v }),
   setAnimateDeformation: (v) => set({ animateDeformation: v }),
+  setGridSnap: (v) => set({ gridSnap: v }),
+  setGridSize: (v) => set({ gridSize: Math.max(v, 0.001) }),
   setDeformationScale: (v) => set({ deformationScale: v }),
   setDiagramScale: (v) => set({ diagramScale: v }),
 }));

@@ -284,6 +284,45 @@ html, body, #root {
   padding: 2px 0 4px;
 }
 
+.coordinate-table {
+  display: grid;
+  gap: 4px;
+}
+
+.coordinate-table-head,
+.coordinate-table-row {
+  display: grid;
+  grid-template-columns: minmax(42px, 1fr) repeat(3, minmax(0, 48px));
+  gap: 4px;
+  align-items: center;
+}
+
+.coordinate-table-head {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.coordinate-table-row span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coordinate-table-row input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  font-size: 11px;
+}
+
 .checkbox-label {
   display: flex;
   align-items: center;

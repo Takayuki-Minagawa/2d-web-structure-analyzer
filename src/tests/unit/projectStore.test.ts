@@ -107,6 +107,37 @@ describe('projectStore basic operations', () => {
     expect(member!.torsionRestraint).toBe('i');
   });
 
+  it('duplicates, arrays, and mirrors selected geometry without loads', () => {
+    const state = useProjectStore.getState();
+    const n1 = state.addNode(1, 2, 3);
+    const n2 = useProjectStore.getState().addNode(4, 2, 3);
+    const mid = useProjectStore.getState().addMember(n1, n2);
+    useProjectStore.getState().addNodalLoad({
+      nodeId: n2,
+      fx: 1,
+      fy: 0,
+      fz: 0,
+      mx: 0,
+      my: 0,
+      mz: 0,
+    });
+
+    const duplicated = useProjectStore.getState().duplicateSelection([], [mid], { x: 10, y: 0, z: 0 });
+    expect(duplicated.nodeIds).toHaveLength(2);
+    expect(duplicated.memberIds).toHaveLength(1);
+    expect(useProjectStore.getState().model.nodes).toHaveLength(4);
+    expect(useProjectStore.getState().model.members).toHaveLength(2);
+    expect(useProjectStore.getState().model.nodalLoads).toHaveLength(1);
+
+    const arrayed = useProjectStore.getState().duplicateSelection([n1], [], { x: 0, y: 5, z: 0 }, 2);
+    expect(arrayed.nodeIds).toHaveLength(2);
+
+    const mirrored = useProjectStore.getState().mirrorSelection([n1], [], 'x');
+    expect(mirrored.nodeIds).toHaveLength(1);
+    const mirroredNode = useProjectStore.getState().model.nodes.find((node) => node.id === mirrored.nodeIds[0]);
+    expect(mirroredNode!.x).toBe(-1);
+  });
+
   it('rejects 2D X-Z mode when nodes are off the X-Z plane', () => {
     const state = useProjectStore.getState();
     state.addNode(0, 1, 0);

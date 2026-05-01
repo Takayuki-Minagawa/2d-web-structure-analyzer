@@ -28,6 +28,8 @@ export const PropertyPanel: React.FC = () => {
   const model = useProjectStore((s) => s.model);
   const updateNode = useProjectStore((s) => s.updateNode);
   const updateMember = useProjectStore((s) => s.updateMember);
+  const duplicateSelection = useProjectStore((s) => s.duplicateSelection);
+  const mirrorSelection = useProjectStore((s) => s.mirrorSelection);
   const addNodalLoad = useProjectStore((s) => s.addNodalLoad);
   const updateNodalLoad = useProjectStore((s) => s.updateNodalLoad);
   const removeNodalLoad = useProjectStore((s) => s.removeNodalLoad);
@@ -49,11 +51,15 @@ export const PropertyPanel: React.FC = () => {
   const showLoads = useViewStore((s) => s.showLoads);
   const showSupports = useViewStore((s) => s.showSupports);
   const animateDeformation = useViewStore((s) => s.animateDeformation);
+  const gridSnap = useViewStore((s) => s.gridSnap);
+  const gridSize = useViewStore((s) => s.gridSize);
   const setShowNodeLabels = useViewStore((s) => s.setShowNodeLabels);
   const setShowMemberLabels = useViewStore((s) => s.setShowMemberLabels);
   const setShowLoads = useViewStore((s) => s.setShowLoads);
   const setShowSupports = useViewStore((s) => s.setShowSupports);
   const setAnimateDeformation = useViewStore((s) => s.setAnimateDeformation);
+  const setGridSnap = useViewStore((s) => s.setGridSnap);
+  const setGridSize = useViewStore((s) => s.setGridSize);
 
   const t = useT();
 
@@ -65,6 +71,10 @@ export const PropertyPanel: React.FC = () => {
     <div className="property-panel">
       <h3>{t('prop.title')}</h3>
       <AnalysisModeEditor />
+      <SelectionTools
+        duplicateSelection={duplicateSelection}
+        mirrorSelection={mirrorSelection}
+      />
 
       {selectedNodes.length === 1 && (
         <NodeProperties
@@ -128,6 +138,16 @@ export const PropertyPanel: React.FC = () => {
               <input type="checkbox" checked={animateDeformation} onChange={(e) => setAnimateDeformation(e.target.checked)} />
               {t('prop.animateDeformation')}
             </label>
+            <label className="checkbox-label">
+              <input type="checkbox" checked={gridSnap} onChange={(e) => setGridSnap(e.target.checked)} />
+              {t('prop.gridSnap')}
+            </label>
+            <div className="prop-row">
+              <label>{t('prop.gridSize')}</label>
+              <input type="number" min="0.001" step="0.5" value={gridSize}
+                disabled={!gridSnap}
+                onChange={(e) => setGridSize(Number(e.target.value))} />
+            </div>
           </div>
           <div className="prop-group">
             <div className="prop-title">{t('prop.scale')}</div>
@@ -138,9 +158,84 @@ export const PropertyPanel: React.FC = () => {
             <input type="range" min="0.1" max="10" step="0.1" value={diagramScale}
               onChange={(e) => setDiagramScale(Number(e.target.value))} />
           </div>
+          <NodeCoordinatesEditor />
           <ModelSummary />
         </>
       )}
+    </div>
+  );
+};
+
+const SelectionTools: React.FC<{
+  duplicateSelection: ReturnType<typeof useProjectStore.getState>['duplicateSelection'];
+  mirrorSelection: ReturnType<typeof useProjectStore.getState>['mirrorSelection'];
+}> = ({ duplicateSelection, mirrorSelection }) => {
+  const selectedNodeIds = useSelectionStore((s) => s.selectedNodeIds);
+  const selectedMemberIds = useSelectionStore((s) => s.selectedMemberIds);
+  const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const selectNode = useSelectionStore((s) => s.selectNode);
+  const selectMember = useSelectionStore((s) => s.selectMember);
+  const t = useT();
+  const [offset, setOffset] = React.useState({ x: 10, y: 0, z: 0 });
+  const [copies, setCopies] = React.useState(3);
+  const [mirrorAxis, setMirrorAxis] = React.useState<'x' | 'y' | 'z'>('x');
+
+  const nodeIds = React.useMemo(() => Array.from(selectedNodeIds), [selectedNodeIds]);
+  const memberIds = React.useMemo(() => Array.from(selectedMemberIds), [selectedMemberIds]);
+  const selectedCount = nodeIds.length + memberIds.length;
+  if (selectedCount === 0) return null;
+
+  const selectCreated = (result: { nodeIds: string[]; memberIds: string[] }) => {
+    clearSelection();
+    for (const id of result.nodeIds) selectNode(id, true);
+    for (const id of result.memberIds) selectMember(id, true);
+  };
+
+  return (
+    <div className="prop-group">
+      <div className="prop-title">{t('prop.selectionTools')}</div>
+      <div className="muted">
+        {t('prop.selectedCount')} {selectedCount}
+      </div>
+      {(['x', 'y', 'z'] as const).map((axis) => (
+        <div className="prop-row" key={axis}>
+          <label>{axis.toUpperCase()}:</label>
+          <input
+            type="number"
+            step="1"
+            value={offset[axis]}
+            onChange={(e) => setOffset({ ...offset, [axis]: Number(e.target.value) })}
+          />
+        </div>
+      ))}
+      <div className="prop-actions">
+        <button onClick={() => selectCreated(duplicateSelection(nodeIds, memberIds, offset, 1))}>
+          {t('prop.copySelection')}
+        </button>
+      </div>
+      <div className="prop-row">
+        <label>{t('prop.arrayCount')}</label>
+        <input type="number" min="1" step="1" value={copies}
+          onChange={(e) => setCopies(Math.max(1, Math.floor(Number(e.target.value))))} />
+      </div>
+      <div className="prop-actions">
+        <button onClick={() => selectCreated(duplicateSelection(nodeIds, memberIds, offset, copies))}>
+          {t('prop.arraySelection')}
+        </button>
+      </div>
+      <div className="prop-row">
+        <label>{t('prop.mirrorAxis')}</label>
+        <select value={mirrorAxis} onChange={(e) => setMirrorAxis(e.target.value as 'x' | 'y' | 'z')}>
+          <option value="x">X=0</option>
+          <option value="y">Y=0</option>
+          <option value="z">Z=0</option>
+        </select>
+      </div>
+      <div className="prop-actions">
+        <button onClick={() => selectCreated(mirrorSelection(nodeIds, memberIds, mirrorAxis))}>
+          {t('prop.mirrorSelection')}
+        </button>
+      </div>
     </div>
   );
 };
@@ -710,6 +805,50 @@ const CouplingsEditor: React.FC = () => {
           Add Coupling
         </button>
       </div>
+    </div>
+  );
+};
+
+const NodeCoordinatesEditor: React.FC = () => {
+  const model = useProjectStore((s) => s.model);
+  const updateNode = useProjectStore((s) => s.updateNode);
+  const t = useT();
+  const lockedCoordinate = get2dModeConfig(getAnalysisMode(model))?.lockedCoordinate;
+
+  return (
+    <div className="prop-group">
+      <div className="prop-title">{t('prop.nodeCoordinates')}</div>
+      {model.nodes.length === 0 ? (
+        <div className="muted">{t('prop.noNodes')}</div>
+      ) : (
+        <div className="coordinate-table">
+          <div className="coordinate-table-head">
+            <span>ID</span>
+            <span>X</span>
+            <span>Y</span>
+            <span>Z</span>
+          </div>
+          {model.nodes.map((node) => (
+            <div className="coordinate-table-row" key={node.id}>
+              <span title={node.id}>{node.id}</span>
+              {(['x', 'y', 'z'] as const).map((axis) => {
+                const locked = lockedCoordinate === axis;
+                return (
+                  <input
+                    key={axis}
+                    type="number"
+                    step="1"
+                    value={node[axis]}
+                    disabled={locked}
+                    title={locked ? t('prop.coordinateLocked2d') : undefined}
+                    onChange={(e) => updateNode(node.id, { [axis]: Number(e.target.value) })}
+                  />
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
