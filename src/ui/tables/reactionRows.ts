@@ -1,5 +1,6 @@
 import type { ProjectModel } from '../../core/model/types';
 import { getAnalysisMode, getEffectiveRestraint } from '../../core/model/analysisMode';
+import { getTorsionRestraintSourceDofs } from '../../core/model/torsionRestraint';
 
 export type ReactionCell = {
   value: number | null;
@@ -45,6 +46,9 @@ export function buildEffectiveReactionRows(
     for (let d = 0; d < 6; d++) {
       if (flags[d]) constrainedSourceDofs[i * 6 + d] = 1;
     }
+  }
+  for (const dof of getTorsionRestraintSourceDofs(model)) {
+    if (dof >= 0 && dof < dofCount) constrainedSourceDofs[dof] = 1;
   }
 
   const ownersByMappedDof = new Map<number, number[]>();

@@ -277,6 +277,70 @@ describe('3D Torsion member', () => {
   });
 });
 
+describe('Member-end twist restraint', () => {
+  const T = 50;
+  const L = 5;
+  const E = 200e6;
+  const nu = 0.3;
+  const G = E / (2 * (1 + nu));
+  const Ix = 8.333e-6;
+
+  it('restrains one member end twist to stabilize pin-ended torsional mode', () => {
+    const model = createBaseModel();
+    model.nodes = [
+      {
+        id: 'n0',
+        x: 0,
+        y: 0,
+        z: 0,
+        restraint: { ux: true, uy: true, uz: true, rx: false, ry: true, rz: true },
+      },
+      {
+        id: 'n1',
+        x: L,
+        y: 0,
+        z: 0,
+        restraint: { ux: true, uy: true, uz: true, rx: false, ry: true, rz: true },
+      },
+    ];
+    model.members = [{
+      ...defaultMember('m1', 'n0', 'n1'),
+      iSprings: { x: 0, y: 2, z: 2 },
+      jSprings: { x: 0, y: 2, z: 2 },
+      torsionRestraint: 'i',
+    }];
+    model.nodalLoads = [
+      { id: 'nl1', nodeId: 'n1', fx: 0, fy: 0, fz: 0, mx: T, my: 0, mz: 0 },
+    ];
+
+    expect(validateModel(model)).toHaveLength(0);
+
+    const indexed = buildIndexedModel(model);
+    expect(indexed.extraFixedDofs).toEqual([3]);
+
+    const result = analyzeFrame({ model: indexed });
+    const theta = (T * L) / (G * Ix);
+    expect(result.displacements[3]).toBeCloseTo(0, 8);
+    expect(result.displacements[9]).toBeCloseTo(theta, 4);
+    expect(result.reactions[3]).toBeCloseTo(-T, 4);
+  });
+
+  it('rejects twist restraint on non-axis-aligned members', () => {
+    const model = createBaseModel();
+    model.nodes = [
+      { id: 'n0', x: 0, y: 0, z: 0, restraint: FIXED },
+      { id: 'n1', x: 4, y: 0, z: 3, restraint: FIXED },
+    ];
+    model.members = [{
+      ...defaultMember('m1', 'n0', 'n1'),
+      torsionRestraint: 'i',
+    }];
+
+    const errors = validateModel(model);
+    expect(errors.some((error) => error.message.includes('捻り拘束'))).toBe(true);
+  });
+});
+
 describe('3D Portal frame: equilibrium check', () => {
   const Fx = 10;
 

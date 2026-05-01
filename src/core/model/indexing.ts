@@ -8,6 +8,10 @@ import type {
   MemberId,
 } from './types';
 import { getAnalysisMode, getEffectiveRestraint } from './analysisMode';
+import {
+  getAxisAlignedRotationDofOffset,
+  getMemberTorsionRestraint,
+} from './torsionRestraint';
 
 const RIGID: EndRelease = { type: 'rigid', kTheta: 0 };
 const PIN: EndRelease = { type: 'pin', kTheta: 0 };
@@ -86,6 +90,7 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
   const nodeIdToIndex = new Map<NodeId, number>();
   const memberIdToIndex = new Map<MemberId, number>();
   const analysisMode = getAnalysisMode(model);
+  const extraFixedDofs: number[] = [];
 
   // Build spring lookup
   const springMap = new Map(
@@ -146,6 +151,18 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
       resolveSpring(jSpr.z, springMap), // jz → DOF 11
     ];
 
+    const torsionRestraint = getMemberTorsionRestraint(m);
+    if (torsionRestraint !== 'none') {
+      const offset = getAxisAlignedRotationDofOffset(dx, dy, dz, L);
+      if (offset === null) {
+        throw new Error(
+          `部材 ${m.id} の捻り拘束はグローバルX/Y/Z軸に平行な部材のみ対応しています。`
+        );
+      }
+      const restrainedNodeIndex = torsionRestraint === 'i' ? niIdx : njIdx;
+      extraFixedDofs.push(restrainedNodeIndex * 6 + offset);
+    }
+
     return {
       index: i,
       id: m.id,
@@ -200,5 +217,6 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
     nodeIdToIndex,
     memberIdToIndex,
     dofMap,
+    extraFixedDofs,
   };
 }

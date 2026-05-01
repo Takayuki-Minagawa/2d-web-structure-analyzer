@@ -5,6 +5,7 @@ export type MaterialId = string;
 export type SectionId = string;
 export type SpringId = string;
 export type AnalysisMode = '3d' | 'xz2d';
+export type TorsionRestraintEnd = 'none' | 'i' | 'j';
 
 // ── Model entities ──
 export interface Restraint {
@@ -60,6 +61,8 @@ export interface Member {
   codeAngle: number; // Rotation about member axis (degrees)
   iSprings: { x: number; y: number; z: number }; // Spring numbers at i-end
   jSprings: { x: number; y: number; z: number }; // Spring numbers at j-end
+  /** Extra support for member-axis twist at one end, used to stabilize pin-ended members. */
+  torsionRestraint?: TorsionRestraintEnd;
 }
 
 // ── Loads ──
@@ -205,6 +208,8 @@ export interface IndexedModel {
   /** DOF mapping for coupling: dofMap[i] = effective DOF index (master).
    *  If dofMap[i] === i, the DOF is independent (or is the master). */
   dofMap: Int32Array;
+  /** Additional constrained source DOFs generated from member-level support features. */
+  extraFixedDofs: number[];
 }
 
 // ── Analysis output ──

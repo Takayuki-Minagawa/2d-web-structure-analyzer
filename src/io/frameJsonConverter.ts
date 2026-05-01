@@ -138,6 +138,7 @@ export function convertFrameJson(
       codeAngle: m.p3,
       iSprings: { x: m.ixSpring, y: m.iySpring, z: m.izSpring },
       jSprings: { x: m.jxSpring, y: m.jySpring, z: m.jzSpring },
+      torsionRestraint: 'none',
     });
 
     // CMQ loads for this member
