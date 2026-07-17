@@ -1,7 +1,12 @@
-import type { IndexedModel, IndexedMember, MemberLoad } from '../model/types';
+import type {
+  IndexedModel,
+  IndexedMember,
+  IndexedNodalSpringSupport,
+  MemberLoad,
+} from '../model/types';
 import { buildLocalStiffness, applyEndReleases, applyEndReleasesToForce } from './element3dFrame';
 import { buildTransformationMatrix, transformVectorToLocal } from './transforms';
-import { computeMemberLoadFixedEndForces } from './loads';
+import { computeMemberLoadFixedEndForces, groupMemberLoadsByMember } from './loads';
 import { getMemberDofs } from './assembly';
 
 const MEMBER_DOF = 12;
@@ -14,7 +19,9 @@ export function computeReactions(
   d: Float64Array,
   F: Float64Array,
   n: number,
-  fixedDofs: number[]
+  fixedDofs: number[],
+  nodeSprings: readonly IndexedNodalSpringSupport[] = [],
+  dofMap?: Int32Array
 ): Float64Array {
   const R = new Float64Array(n);
 
@@ -24,6 +31,19 @@ export function computeReactions(
       kd += K[fi * n + j]! * d[j]!;
     }
     R[fi] = kd - F[fi]!;
+  }
+
+  // A spring-supported DOF is free in the algebraic partition, so Kd-F is
+  // (correctly) zero there. Report the physical support action separately as
+  // -k*u at the spring's source node for equilibrium and result display.
+  for (const spring of nodeSprings) {
+    const stiffnesses = [spring.ux, spring.uy, spring.uz, spring.rx, spring.ry, spring.rz];
+    const base = spring.nodeIndex * 6;
+    for (let localDof = 0; localDof < 6; localDof++) {
+      const sourceDof = base + localDof;
+      const effectiveDof = dofMap?.[sourceDof] ?? sourceDof;
+      R[sourceDof] = R[sourceDof]! - stiffnesses[localDof]! * d[effectiveDof]!;
+    }
   }
 
   return R;
@@ -39,10 +59,13 @@ export function computeReactions(
 export function computeElementEndForces(
   member: IndexedMember,
   globalDisplacements: Float64Array,
-  memberLoads: MemberLoad[]
+  memberLoads: MemberLoad[],
+  gravity: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 }
 ): Float64Array {
-  const kLocal = buildLocalStiffness(member);
-  const T = buildTransformationMatrix(member);
+  const kLocal = member.localStiffness
+    ? new Float64Array(member.localStiffness)
+    : buildLocalStiffness(member);
+  const T = member.transformation ?? buildTransformationMatrix(member);
 
   // Apply end-release condensation (same as assembly phase)
   const hasRelease = member.releases.some(r => r.type !== 'rigid');
@@ -73,9 +96,9 @@ export function computeElementEndForces(
   // Subtract fixed-end forces from member loads (with end-release condensation)
   const fMemberLocal = new Float64Array(MEMBER_DOF);
   for (const ml of memberLoads) {
-    const fLocal = computeMemberLoadFixedEndForces(member, ml);
+    const fLocal = computeMemberLoadFixedEndForces(member, ml, gravity);
     if (hasRelease) {
-      const kOrig = buildLocalStiffness(member);
+      const kOrig = member.localStiffness ?? buildLocalStiffness(member);
       applyEndReleasesToForce(fLocal, kOrig, member.releases);
     }
     for (let i = 0; i < MEMBER_DOF; i++) {
@@ -96,18 +119,18 @@ export function computeElementEndForces(
  */
 export function computeAllElementEndForces(
   model: IndexedModel,
-  globalDisplacements: Float64Array
+  globalDisplacements: Float64Array,
+  memberLoadsByMember = groupMemberLoadsByMember(model.memberLoads)
 ): Map<string, Float64Array> {
   const result = new Map<string, Float64Array>();
 
   for (const member of model.members) {
-    const memberLoads = model.memberLoads.filter(
-      (ml) => ml.memberId === member.id
-    );
+    const memberLoads = memberLoadsByMember.get(member.id) ?? [];
     const endForces = computeElementEndForces(
       member,
       globalDisplacements,
-      memberLoads
+      memberLoads,
+      model.gravity
     );
     result.set(member.id, endForces);
   }

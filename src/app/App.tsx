@@ -1,26 +1,50 @@
-import React, { useRef, useCallback, useEffect, useState } from 'react';
+import React, { useRef, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { Toolbar } from '../ui/toolbar/Toolbar';
 import { PropertyPanel } from '../ui/panels/PropertyPanel';
 import { CanvasPanel } from '../ui/panels/CanvasPanel';
 import { ResultsPanel } from '../ui/tables/ResultsPanel';
 import { HelpDialog } from '../ui/HelpDialog';
+import { ModelGeneratorDialog } from '../ui/dialogs/ModelGeneratorDialog';
+import { ModelTablePanel } from '../ui/tables/ModelTablePanel';
+import { ImportSummaryDialog } from '../ui/dialogs/ImportSummaryDialog';
 import { useProjectStore } from '../state/projectStore';
 import { useViewStore } from '../state/viewStore';
 import { useSelectionStore } from '../state/selectionStore';
 import { useT, useI18nStore } from '../i18n';
-import type { WorkerResponse } from '../worker/protocol';
+import type {
+  AnalyzeAllSuccess,
+  AnyWorkerResponse,
+  WorkerResponse,
+} from '../worker/protocol';
 import type { ProjectFile } from '../core/model/types';
-import { saveProject, loadProject } from '../persistence/indexedDb';
+import { saveProject, loadProjectWithReport } from '../persistence/indexedDb';
+import { redoProject, undoProject } from '../state/projectStore';
+import { generatePortalFrameTemplate } from '../core/model/generators';
 import {
   generateCsvReport,
   generateMarkdownReport,
   generatePrintableReportHtml,
 } from '../io/reportExporter';
+import type { ReportInput, ReportResultView } from '../io/reportExporter';
+import {
+  beginAnalysisRequest,
+  clearActiveAnalysisRequest,
+  completeAnalysisRequest,
+  createAnalysisRequestGuard,
+  getActiveAnalysisRequestId,
+  invalidateAnalysisForModelChange,
+} from './analysisRequestGuard';
 
 export const App: React.FC = () => {
   const workerRef = useRef<Worker | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const requestSequenceRef = useRef(0);
+  const analysisRequestGuardRef = useRef(createAnalysisRequestGuard());
   const [helpOpen, setHelpOpen] = useState(false);
+  const [generatorOpen, setGeneratorOpen] = useState(false);
+  const [initialGenerator, setInitialGenerator] = useState(false);
+  const [tablesOpen, setTablesOpen] = useState(false);
+  const [pendingImportText, setPendingImportText] = useState<string | null>(null);
 
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
@@ -30,12 +54,20 @@ export const App: React.FC = () => {
 
   const model = useProjectStore((s) => s.model);
   const analysisResult = useProjectStore((s) => s.analysisResult);
+  const analysisResults = useProjectStore((s) => s.analysisResults);
+  const analysisEnvelope = useProjectStore((s) => s.analysisEnvelope);
+  const analysisResultView = useProjectStore((s) => s.analysisResultView);
   const analysisError = useProjectStore((s) => s.analysisError);
+  const isResultStale = useProjectStore((s) => s.isResultStale);
   const setAnalyzing = useProjectStore((s) => s.setAnalyzing);
   const setAnalysisResult = useProjectStore((s) => s.setAnalysisResult);
   const isAnalyzing = useProjectStore((s) => s.isAnalyzing);
   const loadModel = useProjectStore((s) => s.loadModel);
   const importJsonAuto = useProjectStore((s) => s.importJsonAuto);
+  const importFrameJson = useProjectStore((s) => s.importFrameJson);
+  const lastImportReport = useProjectStore((s) => s.lastImportReport);
+  const clearImportReport = useProjectStore((s) => s.clearImportReport);
+  const setImportReport = useProjectStore((s) => s.setImportReport);
   const resetModel = useProjectStore((s) => s.resetModel);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
 
@@ -55,36 +87,115 @@ export const App: React.FC = () => {
     };
   }, [model]);
 
+  // Invalidate synchronously with every model replacement/edit. This prevents
+  // a late worker response from being attached to a newer model, including
+  // reset/import and edit-then-undo sequences.
+  useLayoutEffect(() => useProjectStore.subscribe((state, previousState) => {
+    if (state.model === previousState.model) return;
+    const requestId = invalidateAnalysisForModelChange(analysisRequestGuardRef.current);
+    if (!requestId) return;
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setAnalyzing(false);
+  }), [setAnalyzing]);
+
   // Load saved project on startup
   useEffect(() => {
-    loadProject().then((saved) => {
-      if (saved) loadModel(saved);
-    }).catch(() => {/* ignore load errors */});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    loadProjectWithReport().then((saved) => {
+      if (saved) {
+        loadModel(saved.model);
+        if (saved.warnings.length > 0) setImportReport(saved);
+      }
+      else {
+        setInitialGenerator(true);
+        setGeneratorOpen(true);
+      }
+    }).catch(() => {
+      setInitialGenerator(true);
+      setGeneratorOpen(true);
+    });
+  }, [loadModel, setImportReport]);
+
+  useEffect(() => () => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    clearActiveAnalysisRequest(analysisRequestGuardRef.current);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return;
+      if (event.key.toLowerCase() !== 'z') return;
+      event.preventDefault();
+      if (event.shiftKey) redoProject();
+      else undoProject();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const runAnalysis = useCallback(() => {
-    if (isAnalyzing) return;
+    if (useProjectStore.getState().isAnalyzing) return;
 
     if (!workerRef.current) {
-      workerRef.current = new Worker(
+      const worker = new Worker(
         new URL('../worker/analysis.worker.ts', import.meta.url),
         { type: 'module' }
       );
-      workerRef.current.onmessage = (e: MessageEvent<WorkerResponse>) => {
-        setAnalysisResult(e.data);
+      workerRef.current = worker;
+      worker.onmessage = (e: MessageEvent<AnyWorkerResponse>) => {
+        const response = e.data;
+        // App requests always use the correlated v2 protocol. Never accept an
+        // uncorrelated legacy response or a response from a replaced worker.
+        if (!('requestId' in response) || workerRef.current !== worker) return;
+        if (!completeAnalysisRequest(analysisRequestGuardRef.current, response.requestId)) return;
+        if (response.type === 'analyze-canceled') {
+          setAnalyzing(false);
+          return;
+        }
+        if (response.type === 'analyze-success') {
+          const elementEndForces = Object.fromEntries(Object.entries(response.elementEndForces).map(([id, values]) => [id, Array.from(values)]));
+          setAnalysisResult({ ...response, displacements: Array.from(response.displacements), reactions: Array.from(response.reactions), elementEndForces } satisfies WorkerResponse);
+          return;
+        }
+        if (response.type === 'analyze-all-success') {
+          setAnalysisResult(normalizeAnalyzeAllResponse(response));
+          return;
+        }
+        setAnalysisResult({ type: 'analyze-error', error: response.error });
       };
-      workerRef.current.onerror = () => {
+      worker.onerror = () => {
+        if (workerRef.current !== worker) return;
+        const requestId = getActiveAnalysisRequestId(analysisRequestGuardRef.current);
+        if (!requestId || !completeAnalysisRequest(analysisRequestGuardRef.current, requestId)) return;
+        worker.terminate();
+        workerRef.current = null;
         setAnalysisResult({
           type: 'analyze-error',
-          error: { type: 'numerical', message: 'Worker crashed unexpectedly.' },
+          error: { type: 'numerical', message: t('app.workerCrash') },
         });
       };
     }
 
     setAnalyzing(true);
-    workerRef.current.postMessage({ type: 'analyze', model });
-  }, [model, isAnalyzing, setAnalyzing, setAnalysisResult]);
+    const requestId = `analysis-${Date.now()}-${++requestSequenceRef.current}`;
+    beginAnalysisRequest(analysisRequestGuardRef.current, requestId);
+    workerRef.current.postMessage({
+      type: 'analyze-all',
+      requestId,
+      model: useProjectStore.getState().model,
+    });
+  }, [setAnalyzing, setAnalysisResult, t]);
+
+  const cancelAnalysis = useCallback(() => {
+    const requestId = clearActiveAnalysisRequest(analysisRequestGuardRef.current);
+    if (requestId) workerRef.current?.postMessage({ type: 'cancel', requestId });
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    setAnalyzing(false);
+  }, [setAnalyzing]);
 
   const handleExport = useCallback(() => {
     const file: ProjectFile = {
@@ -101,23 +212,48 @@ export const App: React.FC = () => {
     URL.revokeObjectURL(url);
   }, [model]);
 
-  const reportInput = useCallback(() => ({
-    model,
-    result: analysisResult,
-    error: analysisError,
-    generatedAt: new Date(),
-  }), [model, analysisResult, analysisError]);
+  const reportInput = useCallback((): ReportInput => {
+    let resultView: ReportResultView | undefined;
+    if (analysisResultView?.kind === 'target') {
+      const selected = analysisResults.find((item) => item.target.id === analysisResultView.targetId);
+      if (selected) resultView = { kind: 'target', target: selected.target };
+    } else if (analysisResultView?.kind === 'envelope' && analysisEnvelope) {
+      resultView = {
+        kind: 'envelope',
+        bound: analysisResultView.bound,
+        envelope: analysisEnvelope,
+        targetNames: Object.fromEntries(
+          analysisResults.map((item) => [item.target.id, item.target.name]),
+        ),
+      };
+    }
+    return {
+      model,
+      result: analysisResult,
+      ...(resultView ? { resultView } : {}),
+      error: analysisError,
+      generatedAt: new Date(),
+      isResultStale,
+    };
+  }, [model, analysisResult, analysisResults, analysisEnvelope, analysisResultView, analysisError, isResultStale]);
 
   const handleExportMarkdownReport = useCallback(() => {
+    if (isResultStale) { alert(t('prop.staleWarning')); return; }
     downloadText('frame-analysis-report.md', generateMarkdownReport(reportInput()), 'text/markdown');
-  }, [reportInput]);
+  }, [isResultStale, reportInput, t]);
 
   const handleExportCsvReport = useCallback(() => {
+    if (isResultStale) { alert(t('prop.staleWarning')); return; }
     downloadText('frame-analysis-report.csv', generateCsvReport(reportInput()), 'text/csv');
-  }, [reportInput]);
+  }, [isResultStale, reportInput, t]);
 
-  const handlePrintReport = useCallback(() => {
-    const html = generatePrintableReportHtml(reportInput());
+  const handlePrintReport = useCallback(async () => {
+    if (isResultStale) { alert(t('prop.staleWarning')); return; }
+    const viewportImageDataUrl = await captureViewerImage();
+    const html = generatePrintableReportHtml({
+      ...reportInput(),
+      ...(viewportImageDataUrl ? { viewportImageDataUrl } : {}),
+    });
     const blob = new Blob([html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const win = window.open(url, '_blank');
@@ -137,7 +273,7 @@ export const App: React.FC = () => {
       revokeUrl();
     }, { once: true });
     win.addEventListener('beforeunload', revokeUrl, { once: true });
-  }, [reportInput, t]);
+  }, [isResultStale, reportInput, t]);
 
   const handleImport = useCallback(() => {
     const input = document.createElement('input');
@@ -150,7 +286,9 @@ export const App: React.FC = () => {
       reader.onload = () => {
         try {
           clearSelection();
-          importJsonAuto(reader.result as string);
+          const text = reader.result as string;
+          setPendingImportText(text);
+          importJsonAuto(text);
         } catch {
           alert(t('app.importError'));
         }
@@ -167,39 +305,15 @@ export const App: React.FC = () => {
       if (resp.ok) {
         const text = await resp.text();
         clearSelection();
+        setPendingImportText(text);
         importJsonAuto(text);
         return;
       }
     } catch {
       // fallback
     }
-    // Fallback: simple 3D portal frame
-    const sampleModel = {
-      title: 'Simple 3D Portal Frame',
-      analysisMode: '3d' as const,
-      nodes: [
-        { id: 'n1', x: 0, y: 0, z: 0, restraint: { ux: true, uy: true, uz: true, rx: true, ry: true, rz: true } },
-        { id: 'n2', x: 0, y: 0, z: 400, restraint: { ux: false, uy: false, uz: false, rx: false, ry: false, rz: false } },
-        { id: 'n3', x: 600, y: 0, z: 400, restraint: { ux: false, uy: false, uz: false, rx: false, ry: false, rz: false } },
-        { id: 'n4', x: 600, y: 0, z: 0, restraint: { ux: true, uy: true, uz: true, rx: true, ry: true, rz: true } },
-      ],
-      materials: [{ id: 'mat1', name: 'Steel', E: 20500, G: 7900, nu: 0.3, expansion: 0.000012 }],
-      sections: [{ id: 'sec1', name: 'H-200x100', materialId: 'mat1', A: 27.16, Ix: 134, Iy: 1840, Iz: 134, ky: 0, kz: 0 }],
-      springs: [],
-      couplings: [],
-      members: [
-        { id: 'm1', ni: 'n1', nj: 'n2', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 }, torsionRestraint: 'none' as const },
-        { id: 'm2', ni: 'n2', nj: 'n3', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 }, torsionRestraint: 'none' as const },
-        { id: 'm3', ni: 'n4', nj: 'n3', sectionId: 'sec1', codeAngle: 0, iSprings: { x: 0, y: 0, z: 0 }, jSprings: { x: 0, y: 0, z: 0 }, torsionRestraint: 'none' as const },
-      ],
-      nodalLoads: [
-        { id: 'nl1', nodeId: 'n2', fx: 10, fy: 0, fz: 0, mx: 0, my: 0, mz: 0 },
-      ],
-      memberLoads: [],
-      units: { force: 'kN', length: 'cm', moment: 'kN·cm' },
-    };
     clearSelection();
-    loadModel(sampleModel);
+    loadModel(generatePortalFrameTemplate());
   }, [loadModel, importJsonAuto, clearSelection]);
 
   return (
@@ -212,12 +326,13 @@ export const App: React.FC = () => {
           <button onClick={handleExport}>{t('app.export')}</button>
           <button onClick={handleExportMarkdownReport}>{t('app.reportMd')}</button>
           <button onClick={handleExportCsvReport}>{t('app.reportCsv')}</button>
-          <button onClick={handlePrintReport}>{t('app.reportPdf')}</button>
-          <button onClick={() => { clearSelection(); resetModel(); }}>{t('app.new')}</button>
+          <button onClick={() => void handlePrintReport()}>{t('app.reportPdf')}</button>
+          <button onClick={() => window.dispatchEvent(new Event('frame-viewer:screenshot'))}>{t('app.reportPng')}</button>
+          <button onClick={() => { clearSelection(); resetModel(); setInitialGenerator(true); setGeneratorOpen(true); }}>{t('app.new')}</button>
           <button className="top-icon-btn" onClick={toggleTheme} title={theme === 'dark' ? t('theme.light') : t('theme.dark')}>
             {theme === 'dark' ? '\u2600' : '\u263E'}
           </button>
-          <button className="top-icon-btn" onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')} title="Language">
+          <button className="top-icon-btn" onClick={() => setLang(lang === 'ja' ? 'en' : 'ja')} title={t('app.language')}>
             {lang === 'ja' ? 'EN' : 'JA'}
           </button>
           <button className="top-icon-btn" onClick={() => setHelpOpen(true)} title={t('app.help')}>
@@ -226,7 +341,7 @@ export const App: React.FC = () => {
         </div>
       </div>
       <div className="main-area">
-        <Toolbar onRunAnalysis={runAnalysis} />
+        <Toolbar onRunAnalysis={runAnalysis} onCancelAnalysis={cancelAnalysis} isAnalyzing={isAnalyzing} onOpenGenerator={() => { setInitialGenerator(false); setGeneratorOpen(true); }} onOpenTables={() => setTablesOpen(true)} />
         <div className="center-area">
           <CanvasPanel />
           <ResultsPanel />
@@ -234,6 +349,13 @@ export const App: React.FC = () => {
         <PropertyPanel />
       </div>
       <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ModelGeneratorDialog open={generatorOpen} initial={initialGenerator} onClose={() => { setGeneratorOpen(false); setInitialGenerator(false); }} />
+      <ModelTablePanel open={tablesOpen} onClose={() => setTablesOpen(false)} />
+      <ImportSummaryDialog
+        report={lastImportReport}
+        {...(pendingImportText ? { onSelectLoadCase: (index: number) => { importFrameJson(pendingImportText, index); } } : {})}
+        onClose={() => { clearImportReport(); setPendingImportText(null); }}
+      />
     </div>
   );
 };
@@ -246,4 +368,53 @@ function downloadText(filename: string, content: string, type: string): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function captureViewerImage(): Promise<string> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    window.dispatchEvent(new CustomEvent('frame-viewer:capture-request', {
+      detail: { resolve: finish },
+    }));
+    window.setTimeout(() => finish(''), 150);
+  });
+}
+
+function normalizeAnalyzeAllResponse(
+  response: Extract<AnyWorkerResponse, { type: 'analyze-all-success' }>,
+): AnalyzeAllSuccess {
+  const component = (
+    value: typeof response.envelope.displacements,
+  ): AnalyzeAllSuccess['envelope']['displacements'] => ({
+    min: Array.from(value.min),
+    max: Array.from(value.max),
+    minTargetIds: value.minTargetIds,
+    maxTargetIds: value.maxTargetIds,
+  });
+  return {
+    type: 'analyze-all-success',
+    results: response.results.map((result) => ({
+      target: result.target,
+      displacements: Array.from(result.displacements),
+      reactions: Array.from(result.reactions),
+      elementEndForces: Object.fromEntries(
+        Object.entries(result.elementEndForces).map(([memberId, values]) => [memberId, Array.from(values)]),
+      ),
+      diagrams: result.diagrams,
+      warnings: result.warnings,
+    })),
+    envelope: {
+      displacements: component(response.envelope.displacements),
+      reactions: component(response.envelope.reactions),
+      elementEndForces: Object.fromEntries(
+        Object.entries(response.envelope.elementEndForces).map(([memberId, value]) => [memberId, component(value)]),
+      ),
+    },
+    factorizationCount: response.factorizationCount,
+  };
 }

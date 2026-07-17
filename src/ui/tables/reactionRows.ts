@@ -1,6 +1,7 @@
 import type { ProjectModel } from '../../core/model/types';
 import { getAnalysisMode, getEffectiveRestraint } from '../../core/model/analysisMode';
 import { getTorsionRestraintSourceDofs } from '../../core/model/torsionRestraint';
+import { findCouplingIssues, resolveDofMap } from '../../core/model/couplings';
 
 export type ReactionCell = {
   value: number | null;
@@ -16,28 +17,21 @@ export type ReactionRow = {
 export function buildEffectiveReactionRows(
   model: ProjectModel,
   reactions: number[]
-): { rows: ReactionRow[]; hasSharedReactions: boolean } {
+): { rows: ReactionRow[]; hasSharedReactions: boolean; hasInvalidCouplings: boolean } {
   const nodeIdToIndex = new Map(model.nodes.map((n, i) => [n.id, i]));
   const nodeCount = model.nodes.length;
   const dofCount = nodeCount * 6;
   const analysisMode = getAnalysisMode(model);
 
-  // Build DOF map (same logic as indexing.ts)
-  const dofMap = new Int32Array(dofCount);
-  for (let i = 0; i < dofMap.length; i++) dofMap[i] = i;
-  for (const c of model.couplings ?? []) {
-    const mi = nodeIdToIndex.get(c.masterNodeId);
-    const si = nodeIdToIndex.get(c.slaveNodeId);
-    if (mi === undefined || si === undefined) continue;
-    const flags = [c.ux, c.uy, c.uz, c.rx, c.ry, c.rz];
-    for (let d = 0; d < 6; d++) {
-      if (!flags[d]) continue;
-      const slaveDof = si * 6 + d;
-      let resolved = mi * 6 + d;
-      while (dofMap[resolved] !== resolved) resolved = dofMap[resolved]!;
-      dofMap[slaveDof] = resolved;
-    }
-  }
+  // A stale result can briefly coexist with a model that is still being edited.
+  // Invalid coupling declarations must not make the results panel throw while
+  // rendering that state. Falling back to the identity map is conservative:
+  // reactions remain attached to their source nodes, but no invalid coupling is
+  // used to combine or reassign them.
+  const hasInvalidCouplings = findCouplingIssues(model).length > 0;
+  const dofMap = hasInvalidCouplings
+    ? Int32Array.from({ length: dofCount }, (_, dof) => dof)
+    : resolveDofMap(model, nodeIdToIndex);
 
   const constrainedSourceDofs = new Uint8Array(dofCount);
   for (let i = 0; i < model.nodes.length; i++) {
@@ -93,5 +87,5 @@ export function buildEffectiveReactionRows(
     if (hasAny) rows.push({ nodeId: model.nodes[i]!.id, cells });
   }
 
-  return { rows, hasSharedReactions };
+  return { rows, hasSharedReactions, hasInvalidCouplings };
 }

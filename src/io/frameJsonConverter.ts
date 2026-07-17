@@ -1,4 +1,5 @@
-import type { FrameJsonDocument } from './frameJsonTypes';
+import type { FrameJsonBoundary, FrameJsonDocument, FrameJsonMemberLoad } from './frameJsonTypes';
+import type { ImportLoadCaseInfo, ImportWarning, ModelImportResult } from './importTypes';
 import type {
   ProjectModel,
   StructuralNode,
@@ -11,100 +12,257 @@ import type {
   CMQMemberLoad,
 } from '../core/model/types';
 
-let seqCounter = 0;
-function nextSeq(): string {
-  return String(++seqCounter);
+type BoundaryDof = 'deltaX' | 'deltaY' | 'deltaZ' | 'thetaX' | 'thetaY' | 'thetaZ';
+
+const BOUNDARY_DOF_LABELS: Record<BoundaryDof, string> = {
+  deltaX: 'ux',
+  deltaY: 'uy',
+  deltaZ: 'uz',
+  thetaX: 'rx',
+  thetaY: 'ry',
+  thetaZ: 'rz',
+};
+
+export interface FrameJsonImportResult extends ModelImportResult {
+  selectedLoadCaseIndex: number;
+}
+
+function normalizeName(
+  raw: string,
+  fallback: string,
+  itemId: string,
+  normalizedNameIds: string[]
+): string {
+  let value = raw.trim();
+  while (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if (!((first === '"' && last === '"') || (first === "'" && last === "'"))) break;
+    value = value.slice(1, -1).trim();
+  }
+  if (value !== raw) normalizedNameIds.push(itemId);
+  return value || fallback;
+}
+
+function getLoadCaseName(doc: FrameJsonDocument, index: number, count: number): string {
+  const hasHeader = doc.calcCaseMemo.length > count;
+  const memo = doc.calcCaseMemo[index + (hasHeader ? 1 : 0)]?.trim() ?? '';
+  if (!memo) return `Load Case ${index + 1}`;
+
+  const fields = memo.split(',');
+  const candidate = (fields[1] ?? '').trim().replace(/^['"]|['"]$/g, '').trim();
+  return candidate || `Load Case ${index + 1}`;
+}
+
+function getLoadCaseInfo(
+  doc: FrameJsonDocument,
+  selectedIndex: number
+): ImportLoadCaseInfo[] {
+  const observedCount = Math.max(
+    0,
+    ...doc.nodes.map((node) => node.loads.length),
+    ...doc.members.map((member) => Math.max(member.memberLoads.length, member.cmqLoads.length))
+  );
+  const count = Math.max(1, doc.loadCaseCount, observedCount);
+  return Array.from({ length: count }, (_, index) => ({
+    index,
+    name: getLoadCaseName(doc, index, count),
+    selected: index === selectedIndex,
+  }));
+}
+
+function hasMemberLoadData(load: FrameJsonMemberLoad): boolean {
+  return load.p1 !== 0 || load.p2 !== 0 || load.p3 !== 0 ||
+    load.scale !== 0 || load.unitLoad !== 0;
+}
+
+type MemberLoadValueResolution =
+  | { kind: 'value'; value: number; conflictsWithP1: boolean }
+  | { kind: 'zero' }
+  | { kind: 'ambiguous' };
+
+/**
+ * FrameModelMaker stores `scale`, `unitLoad`, `loadCode`, and `p1`
+ * independently and does not define a general precedence rule for external
+ * consumers. Keep the two encodings distinct instead of using a truthiness
+ * fallback that could revive a stale p1 value:
+ *
+ * - no parameterized fields: p1 is the direct value;
+ * - parameterized fields present: unitLoad * scale is the value;
+ * - an incomplete/zero parameterized value is ambiguous and is not imported.
+ */
+function resolveMemberLoadValue(load: FrameJsonMemberLoad): MemberLoadValueResolution {
+  const hasParameterizedFields = load.scale !== 0 ||
+    load.unitLoad !== 0 ||
+    load.loadCode.trim() !== '';
+
+  if (!hasParameterizedFields) {
+    return load.p1 === 0
+      ? { kind: 'zero' }
+      : { kind: 'value', value: load.p1, conflictsWithP1: false };
+  }
+
+  const parameterizedValue = load.unitLoad * load.scale;
+  if (parameterizedValue === 0) {
+    const hasUnresolvedMagnitude = load.p1 !== 0 || load.unitLoad !== 0 || load.scale !== 0;
+    return hasUnresolvedMagnitude ? { kind: 'ambiguous' } : { kind: 'zero' };
+  }
+
+  return {
+    kind: 'value',
+    value: parameterizedValue,
+    conflictsWithP1: load.p1 !== 0 && load.p1 !== parameterizedValue,
+  };
+}
+
+function pushAggregateWarning(
+  warnings: ImportWarning[],
+  code: string,
+  message: string,
+  itemIds: Array<string | number>
+): void {
+  if (itemIds.length === 0) return;
+  warnings.push({ code, message, count: itemIds.length, itemIds });
 }
 
 /**
- * Convert a FrameJsonDocument to the internal ProjectModel.
- * Uses the original numeric numbers from FrameJson as IDs (string form).
- * Extracts loads from the specified load case index.
+ * Convert FrameJson while retaining warnings, a result summary, and available
+ * load-case information. Unsupported data is never silently reinterpreted.
  */
-export function convertFrameJson(
+export function convertFrameJsonWithReport(
   doc: FrameJsonDocument,
   loadCaseIndex?: number
-): ProjectModel {
-  seqCounter = 0;
-  const caseIdx = loadCaseIndex ?? doc.loadCaseIndex;
+): FrameJsonImportResult {
+  let sequence = 0;
+  const nextSeq = (): string => String(++sequence);
+  const warnings: ImportWarning[] = [];
+  const normalizedNameIds: string[] = [];
+  const unsupportedBoundaryIds: string[] = [];
+  const missingBoundaryNodeIds: number[] = [];
+  const missingMemberNodeIds: number[] = [];
+  const missingSectionIds: number[] = [];
+  const missingMaterialIds: number[] = [];
+  const unsupportedLoadTypeIds: string[] = [];
+  const unsupportedLoadDirectionIds: string[] = [];
+  const ambiguousMemberLoadValueIds: string[] = [];
+  const conflictingMemberLoadValueIds: string[] = [];
 
-  // Build node number -> boundary map
-  const boundaryMap = new Map(
-    doc.boundaries.map(b => [b.nodeNumber, b])
-  );
+  const rawCaseIndex = loadCaseIndex ?? doc.loadCaseIndex;
+  const provisionalCases = getLoadCaseInfo(doc, -1);
+  const caseIdx = Math.min(Math.max(0, rawCaseIndex), provisionalCases.length - 1);
+  if (caseIdx !== rawCaseIndex) {
+    warnings.push({
+      code: 'load-case-index-out-of-range',
+      message: `Load case index ${rawCaseIndex} is outside the available range; case ${caseIdx + 1} was selected.`,
+      itemIds: [rawCaseIndex],
+      count: 1,
+    });
+  }
+  const loadCases = getLoadCaseInfo(doc, caseIdx);
+  const selectedLoadCase = loadCases[caseIdx]!;
+  const importedLoadCaseId = `lc-frame-${caseIdx + 1}`;
 
-  // Build material number -> id map
+  const boundaryMap = new Map(doc.boundaries.map((boundary) => [boundary.nodeNumber, boundary]));
+
   const matNumberToId = new Map<number, string>();
-  const materials: Material[] = doc.materials.map(m => {
-    const id = String(m.number);
-    matNumberToId.set(m.number, id);
+  const materials: Material[] = doc.materials.map((material) => {
+    const id = String(material.number);
+    matNumberToId.set(material.number, id);
     return {
       id,
-      name: m.name || `Material ${m.number}`,
-      E: m.young,
-      G: m.shear > 0 ? m.shear : m.young / (2 * (1 + (m.poisson || 0.3))),
-      nu: m.poisson || 0.3,
-      expansion: m.expansion,
+      name: normalizeName(
+        material.name,
+        `Material ${material.number}`,
+        `material:${material.number}`,
+        normalizedNameIds
+      ),
+      E: material.young,
+      G: material.shear > 0
+        ? material.shear
+        : material.young / (2 * (1 + (material.poisson || 0.3))),
+      nu: material.poisson || 0.3,
+      expansion: material.expansion,
     };
   });
 
-  // Build section number -> id map
   const secNumberToId = new Map<number, string>();
-  const sections: Section[] = doc.sections.map(s => {
-    const id = String(s.number);
-    secNumberToId.set(s.number, id);
-    const matId = matNumberToId.get(s.materialNumber) ?? materials[0]?.id ?? '';
+  const sections: Section[] = doc.sections.map((section) => {
+    const id = String(section.number);
+    secNumberToId.set(section.number, id);
+    const mappedMaterialId = matNumberToId.get(section.materialNumber);
+    if (!mappedMaterialId) missingMaterialIds.push(section.number);
     return {
       id,
-      name: s.comment || `Section ${s.number}`,
-      materialId: matId,
-      A: s.p1_A,
-      Ix: s.p2_Ix,
-      Iy: s.p3_Iy,
-      Iz: s.p4_Iz,
-      ky: s.ky,
-      kz: s.kz,
+      name: normalizeName(
+        section.comment,
+        `Section ${section.number}`,
+        `section:${section.number}`,
+        normalizedNameIds
+      ),
+      materialId: mappedMaterialId ?? materials[0]?.id ?? '',
+      A: section.p1_A,
+      Ix: section.p2_Ix,
+      Iy: section.p3_Iy,
+      Iz: section.p4_Iz,
+      ky: section.ky,
+      kz: section.kz,
     };
   });
 
-  // Springs
-  const springs: Spring[] = doc.springs.map(s => ({
-    id: String(s.number),
-    number: s.number,
-    method: s.method,
-    kTheta: s.kTheta,
+  const springs: Spring[] = doc.springs.map((spring) => ({
+    id: String(spring.number),
+    number: spring.number,
+    method: spring.method,
+    kTheta: spring.kTheta,
   }));
 
-  // Build node number -> id map (use original number as id)
+  const readBoundary = (
+    boundary: FrameJsonBoundary | undefined,
+    dof: BoundaryDof
+  ): boolean => {
+    if (!boundary) return false;
+    const code = boundary[dof];
+    if (code === 0) return false;
+    if (code === 1) return true;
+    unsupportedBoundaryIds.push(
+      `${boundary.nodeNumber}.${BOUNDARY_DOF_LABELS[dof]}=${code}`
+    );
+    return false;
+  };
+
   const nodeNumberToId = new Map<number, string>();
-  const nodes: StructuralNode[] = doc.nodes.map(n => {
-    const id = String(n.number);
-    nodeNumberToId.set(n.number, id);
-    const bc = boundaryMap.get(n.number);
+  const nodes: StructuralNode[] = doc.nodes.map((node) => {
+    const id = String(node.number);
+    nodeNumberToId.set(node.number, id);
+    const boundary = boundaryMap.get(node.number);
     return {
       id,
-      x: n.x,
-      y: n.y,
-      z: n.z,
+      number: node.number,
+      x: node.x,
+      y: node.y,
+      z: node.z,
       restraint: {
-        ux: bc ? bc.deltaX !== 0 : false,
-        uy: bc ? bc.deltaY !== 0 : false,
-        uz: bc ? bc.deltaZ !== 0 : false,
-        rx: bc ? bc.thetaX !== 0 : false,
-        ry: bc ? bc.thetaY !== 0 : false,
-        rz: bc ? bc.thetaZ !== 0 : false,
+        ux: readBoundary(boundary, 'deltaX'),
+        uy: readBoundary(boundary, 'deltaY'),
+        uz: readBoundary(boundary, 'deltaZ'),
+        rx: readBoundary(boundary, 'thetaX'),
+        ry: readBoundary(boundary, 'thetaY'),
+        rz: readBoundary(boundary, 'thetaZ'),
       },
     };
   });
 
-  // Nodal loads (from active load case)
+  for (const boundary of doc.boundaries) {
+    if (!nodeNumberToId.has(boundary.nodeNumber)) missingBoundaryNodeIds.push(boundary.nodeNumber);
+  }
+
   const nodalLoads: NodalLoad[] = [];
-  for (const n of doc.nodes) {
-    const load = n.loads[caseIdx];
+  for (const node of doc.nodes) {
+    const load = node.loads[caseIdx];
     if (!load) continue;
     if (load.p1 === 0 && load.p2 === 0 && load.p3 === 0 &&
         load.m1 === 0 && load.m2 === 0 && load.m3 === 0) continue;
-    const nodeId = nodeNumberToId.get(n.number);
+    const nodeId = nodeNumberToId.get(node.number);
     if (!nodeId) continue;
     nodalLoads.push({
       id: `nl${nextSeq()}`,
@@ -118,31 +276,42 @@ export function convertFrameJson(
     });
   }
 
-  // Members and member loads
   const members: Member[] = [];
   const memberLoads: MemberLoad[] = [];
 
-  for (const m of doc.members) {
-    const id = String(m.number);
-    const ni = nodeNumberToId.get(m.iNodeNumber);
-    const nj = nodeNumberToId.get(m.jNodeNumber);
-    if (!ni || !nj) continue;
+  for (const sourceMember of doc.members) {
+    const id = String(sourceMember.number);
+    const ni = nodeNumberToId.get(sourceMember.iNodeNumber);
+    const nj = nodeNumberToId.get(sourceMember.jNodeNumber);
+    if (!ni || !nj) {
+      missingMemberNodeIds.push(sourceMember.number);
+      continue;
+    }
 
-    const secId = secNumberToId.get(m.sectionNumber) ?? sections[0]?.id ?? '';
+    const mappedSectionId = secNumberToId.get(sourceMember.sectionNumber);
+    if (!mappedSectionId) missingSectionIds.push(sourceMember.number);
 
     members.push({
       id,
+      number: sourceMember.number,
       ni,
       nj,
-      sectionId: secId,
-      codeAngle: m.p3,
-      iSprings: { x: m.ixSpring, y: m.iySpring, z: m.izSpring },
-      jSprings: { x: m.jxSpring, y: m.jySpring, z: m.jzSpring },
+      sectionId: mappedSectionId ?? sections[0]?.id ?? '',
+      codeAngle: sourceMember.p3,
+      iSprings: {
+        x: sourceMember.ixSpring,
+        y: sourceMember.iySpring,
+        z: sourceMember.izSpring,
+      },
+      jSprings: {
+        x: sourceMember.jxSpring,
+        y: sourceMember.jySpring,
+        z: sourceMember.jzSpring,
+      },
       torsionRestraint: 'none',
     });
 
-    // CMQ loads for this member
-    const cmq = m.cmqLoads[caseIdx];
+    const cmq = sourceMember.cmqLoads[caseIdx];
     if (cmq && !(
       cmq.iQx === 0 && cmq.iQy === 0 && cmq.iQz === 0 &&
       cmq.iMy === 0 && cmq.iMz === 0 &&
@@ -170,50 +339,174 @@ export function convertFrameJson(
       memberLoads.push(cmqLoad);
     }
 
-    // Member distributed/concentrated loads for this member
-    const ml = m.memberLoads[caseIdx];
-    if (ml && !(ml.p1 === 0 && ml.p2 === 0 && ml.p3 === 0 &&
-                ml.scale === 0 && ml.unitLoad === 0)) {
-      const dirMap: Record<number, 'localX' | 'localY' | 'localZ'> = {
-        0: 'localX', 1: 'localY', 2: 'localZ',
-      };
-      const dir = dirMap[ml.direction] ?? 'localY';
-      const loadValue = ml.unitLoad * ml.scale || ml.p1;
+    const sourceLoad = sourceMember.memberLoads[caseIdx];
+    if (!sourceLoad || !hasMemberLoadData(sourceLoad)) continue;
 
-      if (ml.type === 0 && loadValue !== 0) {
-        memberLoads.push({
-          id: `ml${nextSeq()}`,
-          memberId: id,
-          type: 'udl',
-          direction: dir,
-          value: loadValue,
-        });
-      } else if (ml.type === 1 && loadValue !== 0) {
-        memberLoads.push({
-          id: `ml${nextSeq()}`,
-          memberId: id,
-          type: 'point',
-          direction: dir,
-          value: loadValue,
-          a: ml.p2,
-        });
-      }
+    if (sourceLoad.type !== 0 && sourceLoad.type !== 1) {
+      unsupportedLoadTypeIds.push(`${sourceMember.number}@${caseIdx + 1}:${sourceLoad.type}`);
+      continue;
+    }
+
+    const direction = sourceLoad.direction === 0
+      ? 'localX'
+      : sourceLoad.direction === 1
+        ? 'localY'
+        : sourceLoad.direction === 2
+          ? 'localZ'
+          : null;
+    if (!direction) {
+      unsupportedLoadDirectionIds.push(
+        `${sourceMember.number}@${caseIdx + 1}:${sourceLoad.direction}`
+      );
+      continue;
+    }
+
+    const loadReference = `${sourceMember.number}@${caseIdx + 1}`;
+    const valueResolution = resolveMemberLoadValue(sourceLoad);
+    if (valueResolution.kind === 'ambiguous') {
+      ambiguousMemberLoadValueIds.push(loadReference);
+      continue;
+    }
+    if (valueResolution.kind === 'zero') continue;
+    if (valueResolution.conflictsWithP1) {
+      conflictingMemberLoadValueIds.push(loadReference);
+    }
+    const loadValue = valueResolution.value;
+    if (sourceLoad.type === 0) {
+      memberLoads.push({
+        id: `ml${nextSeq()}`,
+        memberId: id,
+        type: 'udl',
+        direction,
+        value: loadValue,
+      });
+    } else {
+      memberLoads.push({
+        id: `ml${nextSeq()}`,
+        memberId: id,
+        type: 'point',
+        direction,
+        value: loadValue,
+        a: sourceLoad.p2,
+      });
     }
   }
 
-  return {
-    title: doc.title || 'Imported Model',
-    // FrameJson is imported as a full 3D frame. Native ProjectFile JSON
-    // preserves analysisMode when users need 2D-mode round-tripping.
+  const title = normalizeName(doc.title, 'Imported Model', 'project-title', normalizedNameIds);
+
+  pushAggregateWarning(
+    warnings,
+    'normalized-name',
+    `${normalizedNameIds.length} imported name(s) were trimmed or had surrounding quotes removed.`,
+    normalizedNameIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'unsupported-boundary-code',
+    `${unsupportedBoundaryIds.length} unsupported boundary code(s) were left free instead of being treated as fixed.`,
+    unsupportedBoundaryIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'missing-boundary-node',
+    `${missingBoundaryNodeIds.length} boundary record(s) reference missing nodes and were ignored.`,
+    missingBoundaryNodeIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'missing-member-node',
+    `${missingMemberNodeIds.length} member(s) reference missing nodes and were skipped.`,
+    missingMemberNodeIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'missing-section',
+    `${missingSectionIds.length} member(s) reference missing sections and use the first imported section.`,
+    missingSectionIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'missing-material',
+    `${missingMaterialIds.length} section(s) reference missing materials and use the first imported material.`,
+    missingMaterialIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'unsupported-member-load-type',
+    `${unsupportedLoadTypeIds.length} unsupported member load(s) were skipped.`,
+    unsupportedLoadTypeIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'unsupported-member-load-direction',
+    `${unsupportedLoadDirectionIds.length} member load(s) with unsupported directions were skipped.`,
+    unsupportedLoadDirectionIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'ambiguous-member-load-value',
+    `${ambiguousMemberLoadValueIds.length} member load(s) had parameterized fields but a zero unitLoad × scale; they were skipped instead of falling back to p1.`,
+    ambiguousMemberLoadValueIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'conflicting-member-load-value',
+    `${conflictingMemberLoadValueIds.length} member load(s) specified both unitLoad × scale and a different p1; the parameterized value was imported and p1 was ignored.`,
+    conflictingMemberLoadValueIds
+  );
+
+  if (doc.walls.length > 0) {
+    warnings.push({
+      code: 'walls-ignored',
+      message: `${doc.walls.length} wall(s) are not supported and were not imported.`,
+      count: doc.walls.length,
+      itemIds: doc.walls.map((wall) => wall.number),
+    });
+  }
+
+  const model: ProjectModel = {
+    title,
     analysisMode: '3d',
     nodes,
     materials,
     sections,
     springs,
+    loadCases: [{ id: importedLoadCaseId, name: selectedLoadCase.name }],
+    loadCombinations: [],
+    activeLoadCaseId: importedLoadCaseId,
+    activeLoadCombinationId: null,
     members,
     couplings: [],
     nodalLoads,
     memberLoads,
     units: { force: 'kN', length: 'cm', moment: 'kN·cm' },
   };
+
+  return {
+    model,
+    warnings,
+    summary: {
+      format: 'frame-json',
+      nodes: nodes.length,
+      members: members.length,
+      materials: materials.length,
+      sections: sections.length,
+      nodalLoads: nodalLoads.length,
+      memberLoads: memberLoads.length,
+      skippedMembers: missingMemberNodeIds.length,
+      ignoredWalls: doc.walls.length,
+    },
+    loadCases,
+    selectedLoadCaseIndex: caseIdx,
+  };
+}
+
+/**
+ * Compatibility wrapper for callers that only need the imported model.
+ */
+export function convertFrameJson(
+  doc: FrameJsonDocument,
+  loadCaseIndex?: number
+): ProjectModel {
+  return convertFrameJsonWithReport(doc, loadCaseIndex).model;
 }

@@ -5,27 +5,83 @@ import type {
   PointMemberLoad,
   UniformMemberLoad,
   CMQMemberLoad,
+  SelfWeightMemberLoad,
+  TemperatureMemberLoad,
 } from '../model/types';
 import { transformVectorToGlobal, buildTransformationMatrix } from './transforms';
 import { computePhiY, computePhiZ, buildLocalStiffness, applyEndReleasesToForce } from './element3dFrame';
+import { timoshenkoShapeFunctions } from './timoshenko';
 
-/**
- * Timoshenko shape functions for bending at xi = x/L with shear parameter phi.
- * Returns [N1, N2, N3, N4] where:
- *   v(xi) = N1*vi + N2*theta_i + N3*vj + N4*theta_j
- */
-function timoshenkoShapeFunctions(
-  xi: number, L: number, phi: number
-): [number, number, number, number] {
-  const xi2 = xi * xi;
-  const xi3 = xi2 * xi;
-  const d = 1 + phi;
-  return [
-    (1 - 3 * xi2 + 2 * xi3 + phi * (1 - xi)) / d,
-    L * (xi - 2 * xi2 + xi3 + (phi / 2) * (xi - xi2)) / d,
-    (3 * xi2 - 2 * xi3 + phi * xi) / d,
-    L * (-xi2 + xi3 + (phi / 2) * (xi2 - xi)) / d,
-  ];
+export interface LocalLoadComponents {
+  x: number;
+  y: number;
+  z: number;
+}
+
+const ZERO_GRAVITY = { x: 0, y: 0, z: 0 };
+
+export function groupMemberLoadsByMember(
+  loads: readonly MemberLoad[]
+): Map<string, MemberLoad[]> {
+  const grouped = new Map<string, MemberLoad[]>();
+  for (const load of loads) {
+    const group = grouped.get(load.memberId);
+    if (group) group.push(load);
+    else grouped.set(load.memberId, [load]);
+  }
+  return grouped;
+}
+
+/** Project a global vector onto the member's local axes. */
+export function projectGlobalVectorToLocal(
+  member: IndexedMember,
+  vector: { x: number; y: number; z: number }
+): LocalLoadComponents {
+  const { lambda } = member;
+  return {
+    x: lambda[0]! * vector.x + lambda[1]! * vector.y + lambda[2]! * vector.z,
+    y: lambda[3]! * vector.x + lambda[4]! * vector.y + lambda[5]! * vector.z,
+    z: lambda[6]! * vector.x + lambda[7]! * vector.y + lambda[8]! * vector.z,
+  };
+}
+
+function directionalComponents(
+  member: IndexedMember,
+  direction: PointMemberLoad['direction'] | UniformMemberLoad['direction'],
+  value: number
+): LocalLoadComponents {
+  if (direction === 'localX') return { x: value, y: 0, z: 0 };
+  if (direction === 'localY') return { x: 0, y: value, z: 0 };
+  if (direction === 'localZ') return { x: 0, y: 0, z: value };
+  return projectGlobalVectorToLocal(member, {
+    x: direction === 'globalX' ? value : 0,
+    y: direction === 'globalY' ? value : 0,
+    z: direction === 'globalZ' ? value : 0,
+  });
+}
+
+export function resolvePointLoadLocalComponents(
+  member: IndexedMember,
+  load: PointMemberLoad
+): LocalLoadComponents {
+  return directionalComponents(member, load.direction, load.value);
+}
+
+/** Resolve a uniform or self-weight load to local force-per-length components. */
+export function resolveDistributedLoadLocalComponents(
+  member: IndexedMember,
+  load: UniformMemberLoad | SelfWeightMemberLoad,
+  gravity: { x: number; y: number; z: number } = ZERO_GRAVITY
+): LocalLoadComponents {
+  if (load.type === 'udl') {
+    return directionalComponents(member, load.direction, load.value);
+  }
+  const massPerLength = (member.density ?? 0) * member.A * load.value;
+  return projectGlobalVectorToLocal(member, {
+    x: massPerLength * gravity.x,
+    y: massPerLength * gravity.y,
+    z: massPerLength * gravity.z,
+  });
 }
 
 /**
@@ -38,30 +94,41 @@ export function computePointLoadFixedEndForces(
 ): Float64Array {
   const f = new Float64Array(12);
   const { L } = member;
-  const { a, value, direction } = load;
+  const { a } = load;
+  if (!Number.isFinite(L) || L <= 0) {
+    throw new RangeError(`部材 ${member.id} の長さが正の有限値ではありません (L=${L})。`);
+  }
+  if (!Number.isFinite(a) || a < 0 || a > L) {
+    throw new RangeError(
+      `集中荷重 ${load.id} の位置 a=${a} は部材 ${member.id} の範囲 0〜${L} 外です。`
+    );
+  }
   const xi = a / L;
 
-  if (direction === 'localX') {
+  const components = resolvePointLoadLocalComponents(member, load);
+  if (components.x !== 0) {
     // Axial point load
-    f[0] = value * (1 - xi);
-    f[6] = value * xi;
-  } else if (direction === 'localY') {
+    f[0] = f[0]! + components.x * (1 - xi);
+    f[6] = f[6]! + components.x * xi;
+  }
+  if (components.y !== 0) {
     // Transverse Y: uses EIz, DOFs 1,5,7,11
     const phi = computePhiZ(member);
     const [N1, N2, N3, N4] = timoshenkoShapeFunctions(xi, L, phi);
-    f[1] = value * N1;
-    f[5] = value * N2;
-    f[7] = value * N3;
-    f[11] = value * N4;
-  } else {
+    f[1] = f[1]! + components.y * N1;
+    f[5] = f[5]! + components.y * N2;
+    f[7] = f[7]! + components.y * N3;
+    f[11] = f[11]! + components.y * N4;
+  }
+  if (components.z !== 0) {
     // Transverse Z: uses EIy, DOFs 2,4,8,10
     // Sign convention: positive load in local Z uses shape functions with flipped rotation signs
     const phi = computePhiY(member);
     const [N1, N2, N3, N4] = timoshenkoShapeFunctions(xi, L, phi);
-    f[2] = value * N1;
-    f[4] = -value * N2;  // ry coupling sign flip
-    f[8] = value * N3;
-    f[10] = -value * N4;  // ry coupling sign flip
+    f[2] = f[2]! + components.z * N1;
+    f[4] = f[4]! - components.z * N2;  // ry coupling sign flip
+    f[8] = f[8]! + components.z * N3;
+    f[10] = f[10]! - components.z * N4;  // ry coupling sign flip
   }
 
   return f;
@@ -72,28 +139,39 @@ export function computePointLoadFixedEndForces(
  */
 export function computeUDLFixedEndForces(
   member: IndexedMember,
-  load: UniformMemberLoad
+  load: UniformMemberLoad | SelfWeightMemberLoad,
+  gravity: { x: number; y: number; z: number } = ZERO_GRAVITY
 ): Float64Array {
   const f = new Float64Array(12);
   const { L } = member;
-  const { value, direction } = load;
+  const { x, y, z } = resolveDistributedLoadLocalComponents(member, load, gravity);
 
-  if (direction === 'localX') {
-    f[0] = (value * L) / 2;
-    f[6] = (value * L) / 2;
-  } else if (direction === 'localY') {
-    f[1] = (value * L) / 2;
-    f[5] = (value * L * L) / 12;
-    f[7] = (value * L) / 2;
-    f[11] = -(value * L * L) / 12;
-  } else {
-    // localZ
-    f[2] = (value * L) / 2;
-    f[4] = -(value * L * L) / 12;  // ry coupling sign flip
-    f[8] = (value * L) / 2;
-    f[10] = (value * L * L) / 12;  // ry coupling sign flip
-  }
+  f[0] = (x * L) / 2;
+  f[6] = (x * L) / 2;
+  f[1] = (y * L) / 2;
+  f[5] = (y * L * L) / 12;
+  f[7] = (y * L) / 2;
+  f[11] = -(y * L * L) / 12;
+  f[2] = (z * L) / 2;
+  f[4] = -(z * L * L) / 12;  // ry coupling sign flip
+  f[8] = (z * L) / 2;
+  f[10] = (z * L * L) / 12;  // ry coupling sign flip
 
+  return f;
+}
+
+/** Equivalent nodal forces for a uniform axial thermal strain. */
+export function computeTemperatureFixedEndForces(
+  member: IndexedMember,
+  load: TemperatureMemberLoad
+): Float64Array {
+  const f = new Float64Array(12);
+  const thermalForce = member.E * member.A * (member.expansion ?? 0) * load.value;
+  // These are equivalent external nodal forces. With one free end they produce
+  // +alpha*deltaT*L elongation; with both ends fixed, recovery yields the
+  // equal-and-opposite compressive end-force pair.
+  f[0] = -thermalForce;
+  f[6] = thermalForce;
   return f;
 }
 
@@ -145,10 +223,15 @@ export function computeCMQMomentDiagramCorrection(
   const xi = Math.max(0, Math.min(1, x / L));
   const bubble = 4 * xi * (1 - xi);
 
-  // CMQ end moments are stored as equivalent nodal loads, so the displayed
-  // internal moment baseline at mid-span is the line between -iM and +jM.
-  const myBaselineMid = (-load.iMy + load.jMy) / 2;
-  const mzBaselineMid = (-load.iMz + load.jMz) / 2;
+  // generateDiagram integrates from the i-end using its recovered shear.
+  // For a fixed member the CMQ contribution is q_end = -f_cmq, hence:
+  //   My(x) = -iMy - iQz*x
+  //   Mz(x) = -iMz + iQy*x
+  // Using the end-moment chord here only works when the CMQ end actions are
+  // perfectly equilibrated; the shear-based baseline also handles asymmetric
+  // imported CMQ values and makes the requested midpoint exact.
+  const myBaselineMid = -load.iMy - load.iQz * L / 2;
+  const mzBaselineMid = -load.iMz + load.iQy * L / 2;
 
   return {
     My: (load.moy - myBaselineMid) * bubble,
@@ -161,15 +244,19 @@ export function computeCMQMomentDiagramCorrection(
  */
 export function computeMemberLoadFixedEndForces(
   member: IndexedMember,
-  load: MemberLoad
+  load: MemberLoad,
+  gravity: { x: number; y: number; z: number } = ZERO_GRAVITY
 ): Float64Array {
   if (load.type === 'point') {
     return computePointLoadFixedEndForces(member, load);
   } else if (load.type === 'udl') {
-    return computeUDLFixedEndForces(member, load);
-  } else {
+    return computeUDLFixedEndForces(member, load, gravity);
+  } else if (load.type === 'cmq') {
     return computeCMQFixedEndForces(member, load);
+  } else if (load.type === 'temperature') {
+    return computeTemperatureFixedEndForces(member, load);
   }
+  return computeUDLFixedEndForces(member, load, gravity);
 }
 
 /**
@@ -198,16 +285,16 @@ export function buildGlobalForceVector(model: IndexedModel): Float64Array {
     if (mIdx === undefined) continue;
     const member = model.members[mIdx]!;
 
-    const fLocal = computeMemberLoadFixedEndForces(member, ml);
+    const fLocal = computeMemberLoadFixedEndForces(member, ml, model.gravity);
 
     // Apply end-release condensation to the local force vector
     const hasRelease = member.releases.some(r => r.type !== 'rigid');
     if (hasRelease) {
-      const kOrig = buildLocalStiffness(member);
+      const kOrig = member.localStiffness ?? buildLocalStiffness(member);
       applyEndReleasesToForce(fLocal, kOrig, member.releases);
     }
 
-    const T = buildTransformationMatrix(member);
+    const T = member.transformation ?? buildTransformationMatrix(member);
     const fGlobal = transformVectorToGlobal(fLocal, T);
 
     // Scatter with coupling redirect

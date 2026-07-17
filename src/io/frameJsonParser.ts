@@ -27,16 +27,22 @@ function toString_(value: unknown): string {
 }
 
 /**
- * Parse a JSON string into a FrameJsonDocument with safe type coercion.
+ * Parse JSON text once and preserve the original value for format detection.
  */
-export function parseFrameJsonText(text: string): FrameJsonDocument {
-  let parsed: unknown;
+export function parseJsonText(text: string): unknown {
   try {
-    parsed = JSON.parse(text);
+    return JSON.parse(text) as unknown;
   } catch (e) {
     throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
 
+/**
+ * Convert an already-parsed value into a FrameJsonDocument with safe type
+ * coercion. Keeping this separate from text parsing avoids parsing the same
+ * import twice during automatic format detection.
+ */
+export function parseFrameJson(parsed: unknown): FrameJsonDocument {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Invalid JSON: root must be an object');
   }
@@ -197,6 +203,11 @@ export function parseFrameJsonText(text: string): FrameJsonDocument {
   };
 }
 
+/** Parse a JSON string into a FrameJsonDocument with safe type coercion. */
+export function parseFrameJsonText(text: string): FrameJsonDocument {
+  return parseFrameJson(parseJsonText(text));
+}
+
 /**
  * Detect whether a parsed JSON object is a FrameJsonDocument.
  */
@@ -207,7 +218,6 @@ export function isFrameJsonFormat(obj: unknown): boolean {
     Array.isArray(o.nodes) &&
     Array.isArray(o.members) &&
     Array.isArray(o.materials) &&
-    Array.isArray(o.sections) &&
-    Array.isArray(o.boundaries)
+    Array.isArray(o.sections)
   );
 }

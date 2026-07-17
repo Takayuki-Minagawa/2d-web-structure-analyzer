@@ -3,16 +3,19 @@ import { create } from 'zustand';
 interface SelectionState {
   selectedNodeIds: Set<string>;
   selectedMemberIds: Set<string>;
+  focusVersion: number;
   selectNode: (id: string, multi?: boolean) => void;
   selectMember: (id: string, multi?: boolean) => void;
   clearSelection: () => void;
   toggleNodeSelection: (id: string) => void;
   toggleMemberSelection: (id: string) => void;
+  focusSelection: () => void;
 }
 
 export const useSelectionStore = create<SelectionState>((set) => ({
   selectedNodeIds: new Set(),
   selectedMemberIds: new Set(),
+  focusVersion: 0,
 
   selectNode: (id, multi = false) =>
     set((s) => {
@@ -52,4 +55,6 @@ export const useSelectionStore = create<SelectionState>((set) => ({
       else next.add(id);
       return { selectedMemberIds: next };
     }),
+
+  focusSelection: () => set((s) => ({ focusVersion: s.focusVersion + 1 })),
 }));

@@ -1,49 +1,45 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { ProjectModel, DiagramPoint, AnalysisResult } from '../core/model/types';
-import type { DisplayMode, EditTool, Theme } from '../state/viewStore';
-
-const CAMERA_FOV = 45;
-const CAMERA_NEAR = 0.1;
-const CAMERA_FAR = 100000;
-
-const THEME_COLORS = {
-  light: {
-    background: 0xf0f0f0,
-    gridCenter: 0xcccccc,
-    gridLine: 0xeeeeee,
-    labelNode: '#0044aa',
-    labelMember: '#aa4400',
-    labelDiagram: '#9d1c1c',
-    labelBackground: 'rgba(255, 255, 255, 0.82)',
-  },
-  dark: {
-    background: 0x252535,
-    gridCenter: 0x3a3a4a,
-    gridLine: 0x333344,
-    labelNode: '#66aaff',
-    labelMember: '#ffaa66',
-    labelDiagram: '#ffd166',
-    labelBackground: 'rgba(20, 20, 30, 0.82)',
-  },
-} as const;
-
-const NODE_POINT_SIZE = 8;
-const NODE_COLOR = new THREE.Color(0, 0.3, 0.8);
-const NODE_COLOR_SELECTED = new THREE.Color(1, 0, 0);
-const MEMBER_COLOR = new THREE.Color(0, 0.3, 0.8);
-const MEMBER_COLOR_SELECTED = new THREE.Color(1, 0, 0);
-const DEFORM_COLOR = new THREE.Color(0.0, 0.8, 0.3);
-const DIAGRAM_COLOR_POS = new THREE.Color(1, 0.2, 0.2);
-const DIAGRAM_COLOR_NEG = new THREE.Color(0.2, 0.4, 1);
-const SUPPORT_COLOR = 0x00aa00;
-const SUPPORT_OPACITY = 0.6;
-const SUPPORT_SIZE = 8;
-
-const LABEL_FONT = '11px sans-serif';
-const CLICK_DRAG_THRESHOLD = 4;
-const NODE_PICK_RADIUS = 10;
-const MEMBER_PICK_RADIUS = 8;
+import type { AnalysisResult, ProjectModel } from '../core/model/types';
+import type {
+  DisplayMode,
+  EditTool,
+  LabelMode,
+  Theme,
+  WorkPlaneAxis,
+} from '../state/viewStore';
+import {
+  CAMERA_FAR,
+  CAMERA_FOV,
+  CAMERA_NEAR,
+  CLICK_DRAG_THRESHOLD,
+  MEMBER_PICK_RADIUS,
+  NODE_PICK_RADIUS,
+  THEME_COLORS,
+} from './constants';
+import { hasOpenModalDialog, pickMember, pickNode } from './interactionHelpers';
+import { LabelOverlay } from './labelOverlay';
+import {
+  createWorkPlane,
+  normalCoordinate,
+  orientGrid,
+  snapPosition,
+  type Position3,
+} from './localGeometry';
+import {
+  populateLoads,
+  populateMembers,
+  populateNodes,
+  populateSupports,
+  type GeometryHighlightState,
+} from './modelGeometry';
+import { clearGroup, disposeObject } from './resources';
+import {
+  createDeformationGeometry,
+  populateDiagrams,
+  updateDeformationGeometry,
+  type DeformationGeometryState,
+} from './resultGeometry';
 
 export type ViewerSelection =
   | { kind: 'none' }
@@ -61,28 +57,32 @@ export type EditAction =
   | { kind: 'cancelOperation' };
 
 export class ThreeApp {
-  private scene: THREE.Scene;
-  private camera: THREE.PerspectiveCamera;
-  private renderer: THREE.WebGLRenderer;
-  private controls: OrbitControls;
-  private container: HTMLElement;
+  private readonly scene: THREE.Scene;
+  private readonly camera: THREE.PerspectiveCamera;
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly controls: OrbitControls;
+  private readonly container: HTMLElement;
+  private readonly labelOverlay: LabelOverlay;
+  private readonly resizeObserver: ResizeObserver;
 
-  private nodeGroup = new THREE.Group();
-  private memberGroup = new THREE.Group();
-  private resultGroup = new THREE.Group();
-  private supportGroup = new THREE.Group();
-  private loadGroup = new THREE.Group();
-
+  private readonly nodeGroup = new THREE.Group();
+  private readonly memberGroup = new THREE.Group();
+  private readonly resultGroup = new THREE.Group();
+  private readonly supportGroup = new THREE.Group();
+  private readonly loadGroup = new THREE.Group();
+  private readonly interactionGroup = new THREE.Group();
+  private readonly axesHelper = new THREE.AxesHelper(200);
   private grid!: THREE.GridHelper;
 
-  private labelCanvas: HTMLCanvasElement;
-  private labelCtx: CanvasRenderingContext2D;
   private animationId = 0;
-  private onResizeBound: () => void;
   private pointerDownPos: { x: number; y: number } | null = null;
   private draggingNodeId: string | null = null;
-  private draggingNodeZ = 0;
+  private draggingNodeOriginal: Position3 | null = null;
+  private dragPreview: Position3 | null = null;
   private isDragging = false;
+  private rubberBandTarget: Position3 | null = null;
+  private hoveredNodeId: string | null = null;
+  private hoveredMemberId: string | null = null;
 
   private model: ProjectModel | null = null;
   private result: AnalysisResult | null = null;
@@ -90,7 +90,7 @@ export class ThreeApp {
   private deformationScale = 50;
   private animateDeformation = false;
   private deformationAnimationFactor = 1;
-  private lastAnimationRebuildFactor = 1;
+  private deformationGeometry: DeformationGeometryState | null = null;
   private diagramScale = 1;
   private gridSnap = true;
   private gridSize = 1;
@@ -99,15 +99,17 @@ export class ThreeApp {
   private isDark = false;
   private showNodeLabels = true;
   private showMemberLabels = true;
+  private labelMode: LabelMode = 'auto';
   private editTool: EditTool = 'select';
   private pendingMemberStart: string | null = null;
+  private workPlaneAxis: WorkPlaneAxis = 'xy';
+  private workPlaneOffset = 0;
 
-  onSelectionChanged: ((sel: ViewerSelection, multi: boolean) => void) | null = null;
+  onSelectionChanged: ((selection: ViewerSelection, multi: boolean) => void) | null = null;
   onEditAction: ((action: EditAction) => void) | null = null;
 
   constructor(container: HTMLElement) {
     this.container = container;
-
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(THEME_COLORS.dark.background);
 
@@ -117,90 +119,84 @@ export class ThreeApp {
     this.camera.up.set(0, 0, 1);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.setPixelRatio(window.devicePixelRatio);
     container.appendChild(this.renderer.domElement);
-
-    this.labelCanvas = document.createElement('canvas');
-    this.labelCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;';
-    this.labelCanvas.width = container.clientWidth;
-    this.labelCanvas.height = container.clientHeight;
-    container.appendChild(this.labelCanvas);
-    this.labelCtx = this.labelCanvas.getContext('2d')!;
+    this.labelOverlay = new LabelOverlay(container);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.1;
     this.controls.screenSpacePanning = true;
 
-    this.scene.add(this.nodeGroup);
-    this.scene.add(this.memberGroup);
-    this.scene.add(this.resultGroup);
-    this.scene.add(this.supportGroup);
-    this.scene.add(this.loadGroup);
-
+    this.scene.add(
+      this.nodeGroup,
+      this.memberGroup,
+      this.resultGroup,
+      this.supportGroup,
+      this.loadGroup,
+      this.interactionGroup,
+    );
     this.createGrid();
-    this.scene.add(new THREE.AxesHelper(200));
+    this.scene.add(this.axesHelper);
 
-    this.onResizeBound = () => this.onResize();
-    window.addEventListener('resize', this.onResizeBound);
+    this.resizeObserver = new ResizeObserver(() => this.onResize());
+    this.resizeObserver.observe(container);
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.addEventListener('pointermove', this.onPointerMove);
+    this.renderer.domElement.addEventListener('pointerleave', this.onPointerLeave);
     window.addEventListener('pointerup', this.onPointerUp);
     window.addEventListener('keydown', this.onKeyDown);
-
+    this.onResize();
     this.animate();
   }
 
   private createGrid(): void {
     const colors = this.isDark ? THEME_COLORS.dark : THEME_COLORS.light;
     this.grid = new THREE.GridHelper(2000, 20, colors.gridCenter, colors.gridLine);
-    this.grid.rotation.x = Math.PI / 2;
+    orientGrid(this.grid, this.workPlaneAxis, this.workPlaneOffset);
     this.scene.add(this.grid);
   }
 
   private animate = (): void => {
     this.animationId = requestAnimationFrame(this.animate);
     this.controls.update();
-    if (this.animateDeformation && this.displayMode === 'deformation' && this.result) {
+    if (this.animateDeformation && this.displayMode === 'deformation' && this.deformationGeometry) {
       this.deformationAnimationFactor = Math.sin(performance.now() / 650);
-      if (Math.abs(this.deformationAnimationFactor - this.lastAnimationRebuildFactor) > 0.02) {
-        this.lastAnimationRebuildFactor = this.deformationAnimationFactor;
-        this.rebuildResults();
-      }
+      this.updateDeformation();
     }
     this.renderer.render(this.scene, this.camera);
     this.drawLabels();
   };
 
   private onResize(): void {
-    const w = this.container.clientWidth;
-    const h = this.container.clientHeight;
-    if (w <= 0 || h <= 0) return;
-    this.camera.aspect = w / h;
+    const width = this.container.clientWidth;
+    const height = this.container.clientHeight;
+    if (width <= 0 || height <= 0) return;
+    const pixelRatio = window.devicePixelRatio || 1;
+    this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
-    this.labelCanvas.width = w;
-    this.labelCanvas.height = h;
-  }
-
-  resize(): void {
-    this.onResize();
+    this.renderer.setPixelRatio(pixelRatio);
+    this.renderer.setSize(width, height);
+    this.labelOverlay.resize(width, height, pixelRatio);
   }
 
   setTheme(theme: Theme): void {
     this.isDark = theme === 'dark';
     const colors = this.isDark ? THEME_COLORS.dark : THEME_COLORS.light;
     (this.scene.background as THREE.Color).set(colors.background);
-
     this.scene.remove(this.grid);
-    this.grid.geometry.dispose();
-    (this.grid.material as THREE.Material).dispose();
+    disposeObject(this.grid);
     this.createGrid();
   }
 
   setModel(model: ProjectModel): void {
     this.model = model;
+    this.pendingMemberStart = null;
+    this.rubberBandTarget = null;
+    this.hoveredNodeId = null;
+    this.hoveredMemberId = null;
+    this.cancelDragPreview();
     this.rebuildNodes();
     this.rebuildMembers();
     this.rebuildSupports();
@@ -214,25 +210,25 @@ export class ThreeApp {
   }
 
   setDisplayMode(mode: DisplayMode): void {
+    if (this.displayMode === mode) return;
     this.displayMode = mode;
     this.rebuildResults();
   }
 
   setDeformationScale(scale: number): void {
     this.deformationScale = scale;
-    this.rebuildResults();
+    if (this.displayMode === 'deformation') this.updateDeformation();
   }
 
   setAnimateDeformation(value: boolean): void {
     this.animateDeformation = value;
     this.deformationAnimationFactor = 1;
-    this.lastAnimationRebuildFactor = 1;
-    this.rebuildResults();
+    if (this.displayMode === 'deformation') this.updateDeformation();
   }
 
   setDiagramScale(scale: number): void {
     this.diagramScale = scale;
-    this.rebuildResults();
+    if (this.displayMode !== 'model' && this.displayMode !== 'deformation') this.rebuildResults();
   }
 
   setGridSnap(value: boolean): void {
@@ -243,14 +239,29 @@ export class ThreeApp {
     this.gridSize = Math.max(value, 0.001);
   }
 
-  setShowNodeLabels(v: boolean): void { this.showNodeLabels = v; }
-  setShowMemberLabels(v: boolean): void { this.showMemberLabels = v; }
-  setShowLoads(v: boolean): void { this.loadGroup.visible = v; }
-  setShowSupports(v: boolean): void { this.supportGroup.visible = v; }
+  setShowNodeLabels(value: boolean): void { this.showNodeLabels = value; }
+  setShowMemberLabels(value: boolean): void { this.showMemberLabels = value; }
+  setShowLoads(value: boolean): void { this.loadGroup.visible = value; }
+  setShowSupports(value: boolean): void { this.supportGroup.visible = value; }
+  setLabelMode(mode: LabelMode): void { this.labelMode = mode; }
+
+  setWorkPlane(axis: WorkPlaneAxis, offset: number): void {
+    this.workPlaneAxis = axis;
+    this.workPlaneOffset = Number.isFinite(offset) ? offset : 0;
+    orientGrid(this.grid, this.workPlaneAxis, this.workPlaneOffset);
+    this.rubberBandTarget = null;
+    this.rebuildInteractionOverlay();
+  }
 
   setEditTool(tool: EditTool): void {
     this.editTool = tool;
-    if (tool !== 'addMember') this.pendingMemberStart = null;
+    if (tool !== 'addMember') {
+      this.pendingMemberStart = null;
+      this.rubberBandTarget = null;
+      this.rebuildNodes();
+      this.rebuildInteractionOverlay();
+    }
+    this.updateCursor();
   }
 
   setSelectedIds(nodeIds: ReadonlySet<string>, memberIds: ReadonlySet<string>): void {
@@ -262,698 +273,279 @@ export class ThreeApp {
 
   fitToView(): void {
     if (!this.model || this.model.nodes.length === 0) return;
+    const bounds = new THREE.Box3();
+    for (const node of this.model.nodes) bounds.expandByPoint(new THREE.Vector3(node.x, node.y, node.z));
+    this.frameBounds(bounds);
+  }
 
-    let minX = Infinity, minY = Infinity, minZ = Infinity;
-    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-
-    for (const n of this.model.nodes) {
-      minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
-      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
-      minZ = Math.min(minZ, n.z); maxZ = Math.max(maxZ, n.z);
+  focusSelection(): void {
+    if (!this.model) return;
+    const nodeMap = new Map(this.model.nodes.map((node) => [node.id, node]));
+    const bounds = new THREE.Box3();
+    for (const nodeId of this.selectedNodeIds) {
+      const node = nodeMap.get(nodeId);
+      if (node) bounds.expandByPoint(new THREE.Vector3(node.x, node.y, node.z));
     }
+    for (const memberId of this.selectedMemberIds) {
+      const member = this.model.members.find((item) => item.id === memberId);
+      if (!member) continue;
+      const nodeI = nodeMap.get(member.ni);
+      const nodeJ = nodeMap.get(member.nj);
+      if (nodeI) bounds.expandByPoint(new THREE.Vector3(nodeI.x, nodeI.y, nodeI.z));
+      if (nodeJ) bounds.expandByPoint(new THREE.Vector3(nodeJ.x, nodeJ.y, nodeJ.z));
+    }
+    if (bounds.isEmpty()) return;
+    this.frameBounds(bounds);
+  }
 
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const cz = (minZ + maxZ) / 2;
-    const maxDim = Math.max(maxX - minX, maxY - minY, maxZ - minZ, 100);
-
-    this.controls.target.set(cx, cy, cz);
-    this.camera.position.set(cx + maxDim, cy - maxDim * 1.2, cz + maxDim * 0.8);
+  private frameBounds(bounds: THREE.Box3): void {
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const maximumDimension = Math.max(size.x, size.y, size.z, 20);
+    const direction = this.camera.position.clone().sub(this.controls.target);
+    if (direction.lengthSq() < 1e-8) direction.set(1, -1.2, 0.8);
+    direction.normalize();
+    const verticalFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const distance = maximumDimension / (2 * Math.tan(verticalFov / 2)) * 1.5;
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).addScaledVector(direction, distance);
+    this.camera.near = Math.max(CAMERA_NEAR, distance / 10000);
+    this.camera.far = Math.max(CAMERA_FAR, distance * 100);
     this.camera.updateProjectionMatrix();
     this.controls.update();
   }
 
-  private clearGroup(group: THREE.Group): void {
-    while (group.children.length > 0) {
-      const child = group.children[0]!;
-      group.remove(child);
-      this.disposeObject(child);
-    }
+  capturePngDataUrl(): string {
+    this.renderer.render(this.scene, this.camera);
+    this.drawLabels();
+    const canvas = document.createElement('canvas');
+    canvas.width = this.renderer.domElement.width;
+    canvas.height = this.renderer.domElement.height;
+    const context = canvas.getContext('2d');
+    if (!context) return '';
+    context.drawImage(this.renderer.domElement, 0, 0);
+    this.labelOverlay.drawOnto(context);
+    return canvas.toDataURL('image/png');
   }
 
-  private disposeObject(obj: THREE.Object3D): void {
-    // Recurse into children first (e.g. ArrowHelper contains line + cone)
-    while (obj.children.length > 0) {
-      const child = obj.children[0]!;
-      obj.remove(child);
-      this.disposeObject(child);
-    }
-    if (obj instanceof THREE.Mesh || obj instanceof THREE.Points || obj instanceof THREE.LineSegments || obj instanceof THREE.Line) {
-      obj.geometry.dispose();
-      const mat = obj.material;
-      if (Array.isArray(mat)) mat.forEach(m => m.dispose());
-      else mat.dispose();
-    }
+  downloadPng(filename = 'frame-viewer.png'): void {
+    const url = this.capturePngDataUrl();
+    if (!url) return;
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+  }
+
+  private get highlights(): GeometryHighlightState {
+    return {
+      selectedNodeIds: this.selectedNodeIds,
+      selectedMemberIds: this.selectedMemberIds,
+      hoveredNodeId: this.hoveredNodeId,
+      hoveredMemberId: this.hoveredMemberId,
+      pendingMemberStart: this.pendingMemberStart,
+    };
   }
 
   private rebuildNodes(): void {
-    this.clearGroup(this.nodeGroup);
-    if (!this.model) return;
-
-    const positions: number[] = [];
-    const colors: number[] = [];
-    for (const n of this.model.nodes) {
-      positions.push(n.x, n.y, n.z);
-      const c = this.selectedNodeIds.has(n.id) ? NODE_COLOR_SELECTED : NODE_COLOR;
-      colors.push(c.r, c.g, c.b);
-    }
-    if (positions.length === 0) return;
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-
-    const mat = new THREE.PointsMaterial({ size: NODE_POINT_SIZE, sizeAttenuation: false, vertexColors: true });
-    this.nodeGroup.add(new THREE.Points(geo, mat));
+    clearGroup(this.nodeGroup);
+    if (this.model) populateNodes(this.nodeGroup, this.model, this.highlights);
   }
 
   private rebuildMembers(): void {
-    this.clearGroup(this.memberGroup);
-    if (!this.model) return;
-
-    const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-    const positions: number[] = [];
-    const colors: number[] = [];
-
-    for (const m of this.model.members) {
-      const ni = nodeMap.get(m.ni);
-      const nj = nodeMap.get(m.nj);
-      if (!ni || !nj) continue;
-      positions.push(ni.x, ni.y, ni.z, nj.x, nj.y, nj.z);
-      const c = this.selectedMemberIds.has(m.id) ? MEMBER_COLOR_SELECTED : MEMBER_COLOR;
-      colors.push(c.r, c.g, c.b, c.r, c.g, c.b);
-    }
-    if (positions.length === 0) return;
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    const mat = new THREE.LineBasicMaterial({ vertexColors: true });
-    this.memberGroup.add(new THREE.LineSegments(geo, mat));
+    clearGroup(this.memberGroup);
+    if (this.model) populateMembers(this.memberGroup, this.model, this.highlights);
   }
 
   private rebuildSupports(): void {
-    this.clearGroup(this.supportGroup);
-    if (!this.model) return;
-
-    for (const n of this.model.nodes) {
-      const r = n.restraint;
-      if (!r.ux && !r.uy && !r.uz) continue;
-
-      const triGeo = new THREE.BufferGeometry();
-      const s = SUPPORT_SIZE;
-      triGeo.setAttribute('position', new THREE.Float32BufferAttribute([
-        n.x, n.y, n.z - s,
-        n.x - s * 0.7, n.y, n.z - s * 2,
-        n.x + s * 0.7, n.y, n.z - s * 2,
-      ], 3));
-      triGeo.setIndex([0, 1, 2]);
-      const triMat = new THREE.MeshBasicMaterial({
-        color: SUPPORT_COLOR,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: SUPPORT_OPACITY,
-      });
-      this.supportGroup.add(new THREE.Mesh(triGeo, triMat));
-    }
-  }
-
-  /**
-   * Compute local axes for a member, matching indexing.ts computeLambda.
-   * Returns { lx, ly, lz } as THREE.Vector3 in global coords.
-   */
-  private computeMemberLocalAxes(
-    ni: { x: number; y: number; z: number },
-    nj: { x: number; y: number; z: number },
-    codeAngle: number
-  ): { lx: THREE.Vector3; ly: THREE.Vector3; lz: THREE.Vector3 } {
-    const dx = nj.x - ni.x, dy = nj.y - ni.y, dz = nj.z - ni.z;
-    const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    const lx = new THREE.Vector3(dx / L, dy / L, dz / L);
-
-    const isVertical = Math.abs(lx.z) > 0.95;
-    const ref = isVertical ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1);
-
-    const ly = new THREE.Vector3().crossVectors(ref, lx).normalize();
-    const lz = new THREE.Vector3().crossVectors(lx, ly).normalize();
-
-    if (codeAngle !== 0) {
-      const theta = codeAngle * Math.PI / 180;
-      const cosT = Math.cos(theta), sinT = Math.sin(theta);
-      const ly2 = ly.clone().multiplyScalar(cosT).add(lz.clone().multiplyScalar(sinT));
-      const lz2 = ly.clone().multiplyScalar(-sinT).add(lz.clone().multiplyScalar(cosT));
-      return { lx, ly: ly2, lz: lz2 };
-    }
-    return { lx, ly, lz };
+    clearGroup(this.supportGroup);
+    if (this.model) populateSupports(this.supportGroup, this.model);
   }
 
   private rebuildLoads(): void {
-    this.clearGroup(this.loadGroup);
-    if (!this.model) return;
-
-    const FORCE_COLOR = 0xff4444;
-    const MOMENT_COLOR = 0xee8800;
-    const ARROW_LEN = 15;
-    const HEAD_LEN = 4;
-    const HEAD_WIDTH = 2;
-
-    const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-
-    const addArrow = (origin: THREE.Vector3, dir: THREE.Vector3, len: number, color: number) => {
-      const start = origin.clone().add(dir.clone().multiplyScalar(-len));
-      this.loadGroup.add(new THREE.ArrowHelper(dir, start, len, color, HEAD_LEN, HEAD_WIDTH));
-    };
-
-    const addMomentSymbol = (
-      origin: THREE.Vector3,
-      axis: THREE.Vector3,
-      value: number,
-      color: number,
-      armLength = ARROW_LEN * 0.5
-    ) => {
-      if (Math.abs(value) < 1e-10) return;
-      const axisDir = axis.clone().normalize();
-      const ref = Math.abs(axisDir.z) > 0.9
-        ? new THREE.Vector3(1, 0, 0)
-        : new THREE.Vector3(0, 0, 1);
-      const arm = new THREE.Vector3().crossVectors(axisDir, ref).normalize();
-      const sign = value > 0 ? 1 : -1;
-      const tipDir = new THREE.Vector3().crossVectors(arm, axisDir).normalize().multiplyScalar(sign);
-      const armOffset = origin.clone().add(arm.clone().multiplyScalar(armLength));
-      addArrow(armOffset, tipDir, armLength, color);
-      const armOffset2 = origin.clone().add(arm.clone().multiplyScalar(-armLength));
-      addArrow(armOffset2, tipDir.clone().negate(), armLength, color);
-    };
-
-    // ── Nodal loads: forces + moments ──
-    for (const nl of this.model.nodalLoads) {
-      const node = nodeMap.get(nl.nodeId);
-      if (!node) continue;
-      const o = new THREE.Vector3(node.x, node.y, node.z);
-
-      // Forces
-      const forces: [number, THREE.Vector3][] = [
-        [nl.fx, new THREE.Vector3(1, 0, 0)],
-        [nl.fy, new THREE.Vector3(0, 1, 0)],
-        [nl.fz, new THREE.Vector3(0, 0, 1)],
-      ];
-      for (const [v, dir] of forces) {
-        if (Math.abs(v) < 1e-10) continue;
-        addArrow(o, dir.multiplyScalar(v > 0 ? 1 : -1), ARROW_LEN, FORCE_COLOR);
-      }
-
-      // Moments (double-headed arc approximated as curved arrow symbol)
-      const moments: [number, THREE.Vector3][] = [
-        [nl.mx, new THREE.Vector3(1, 0, 0)],
-        [nl.my, new THREE.Vector3(0, 1, 0)],
-        [nl.mz, new THREE.Vector3(0, 0, 1)],
-      ];
-      for (const [v, axis] of moments) {
-        addMomentSymbol(o, axis, v, MOMENT_COLOR);
-      }
-    }
-
-    // ── Member loads ──
-    const memberMap = new Map(this.model.members.map(m => [m.id, m]));
-
-    for (const ml of this.model.memberLoads) {
-      const member = memberMap.get(ml.memberId);
-      if (!member) continue;
-      const ni = nodeMap.get(member.ni);
-      const nj = nodeMap.get(member.nj);
-      if (!ni || !nj) continue;
-
-      const pI = new THREE.Vector3(ni.x, ni.y, ni.z);
-      const pJ = new THREE.Vector3(nj.x, nj.y, nj.z);
-      const { lx, ly, lz } = this.computeMemberLocalAxes(ni, nj, member.codeAngle);
-
-      const localDir = (dir: string): THREE.Vector3 => {
-        if (dir === 'localX') return lx.clone();
-        if (dir === 'localZ') return lz.clone();
-        return ly.clone();
-      };
-
-      if (ml.type === 'udl') {
-        const dir = localDir(ml.direction).multiplyScalar(ml.value > 0 ? 1 : -1);
-        const NSEG = 5;
-        for (let i = 0; i <= NSEG; i++) {
-          const pos = pI.clone().lerp(pJ.clone(), i / NSEG);
-          addArrow(pos, dir, ARROW_LEN * 0.6, FORCE_COLOR);
-        }
-      } else if (ml.type === 'point') {
-        const L = pI.distanceTo(pJ);
-        const t = L > 0 ? ml.a / L : 0;
-        const pos = pI.clone().lerp(pJ.clone(), t);
-        const dir = localDir(ml.direction).multiplyScalar(ml.value > 0 ? 1 : -1);
-        addArrow(pos, dir, ARROW_LEN, FORCE_COLOR);
-      } else if (ml.type === 'cmq') {
-        // CMQ: show equivalent end forces plus end/mid moments.
-        const cmqForces: [THREE.Vector3, [number, number, number]][] = [
-          [pI, [ml.iQx, ml.iQy, ml.iQz]],
-          [pJ, [ml.jQx, ml.jQy, ml.jQz]],
-        ];
-        for (const [pos, [qx, qy, qz]] of cmqForces) {
-          if (Math.abs(qx) > 1e-10) addArrow(pos, lx.clone().multiplyScalar(qx > 0 ? 1 : -1), ARROW_LEN * 0.5, FORCE_COLOR);
-          if (Math.abs(qy) > 1e-10) addArrow(pos, ly.clone().multiplyScalar(qy > 0 ? 1 : -1), ARROW_LEN * 0.5, FORCE_COLOR);
-          if (Math.abs(qz) > 1e-10) addArrow(pos, lz.clone().multiplyScalar(qz > 0 ? 1 : -1), ARROW_LEN * 0.5, FORCE_COLOR);
-        }
-
-        const pMid = pI.clone().lerp(pJ, 0.5);
-        const cmqMoments: [THREE.Vector3, THREE.Vector3, number][] = [
-          [pI, ly, ml.iMy],
-          [pI, lz, ml.iMz],
-          [pJ, ly, ml.jMy],
-          [pJ, lz, ml.jMz],
-          [pMid, ly, ml.moy],
-          [pMid, lz, ml.moz],
-        ];
-        for (const [pos, axis, value] of cmqMoments) {
-          addMomentSymbol(pos, axis, value, MOMENT_COLOR, ARROW_LEN * 0.35);
-        }
-      }
-    }
+    clearGroup(this.loadGroup);
+    if (this.model) populateLoads(this.loadGroup, this.model);
   }
 
   private rebuildResults(): void {
-    this.clearGroup(this.resultGroup);
+    clearGroup(this.resultGroup);
+    this.deformationGeometry = null;
     if (!this.model || !this.result) return;
-
     if (this.displayMode === 'deformation') {
-      this.drawDeformedShape();
+      this.deformationGeometry = createDeformationGeometry(this.model, this.result);
+      if (this.deformationGeometry) {
+        this.resultGroup.add(this.deformationGeometry.lines);
+        this.updateDeformation();
+      }
     } else if (this.displayMode !== 'model') {
-      this.drawDiagrams();
-    }
-  }
-
-  private drawDeformedShape(): void {
-    if (!this.model || !this.result) return;
-
-    const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-    const nodeIdToIndex = new Map(this.model.nodes.map((n, i) => [n.id, i]));
-    const d = this.result.displacements;
-    const scale = this.deformationScale * (this.animateDeformation ? this.deformationAnimationFactor : 1);
-    const positions: number[] = [];
-
-    for (const m of this.model.members) {
-      const ni = nodeMap.get(m.ni);
-      const nj = nodeMap.get(m.nj);
-      if (!ni || !nj) continue;
-      const ii = nodeIdToIndex.get(m.ni)!;
-      const ij = nodeIdToIndex.get(m.nj)!;
-
-      positions.push(
-        ni.x + (d[ii * 6] ?? 0) * scale,
-        ni.y + (d[ii * 6 + 1] ?? 0) * scale,
-        ni.z + (d[ii * 6 + 2] ?? 0) * scale,
-        nj.x + (d[ij * 6] ?? 0) * scale,
-        nj.y + (d[ij * 6 + 1] ?? 0) * scale,
-        nj.z + (d[ij * 6 + 2] ?? 0) * scale,
+      populateDiagrams(
+        this.resultGroup,
+        this.model,
+        this.result,
+        this.displayMode,
+        this.diagramScale,
       );
     }
-
-    if (positions.length === 0) return;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    const mat = new THREE.LineBasicMaterial({ color: DEFORM_COLOR });
-    this.resultGroup.add(new THREE.LineSegments(geo, mat));
   }
 
-  private drawDiagrams(): void {
-    if (!this.model || !this.result) return;
-
-    const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-    const mode = this.displayMode;
-    const scale = this.diagramScale;
-
-    for (const m of this.model.members) {
-      const ni = nodeMap.get(m.ni);
-      const nj = nodeMap.get(m.nj);
-      if (!ni || !nj) continue;
-
-      const diagData = this.result.diagrams[m.id];
-      if (!diagData) continue;
-      const pts = diagData.points;
-      if (pts.length < 2) continue;
-
-      // Member direction
-      const dx = nj.x - ni.x;
-      const dy = nj.y - ni.y;
-      const dz = nj.z - ni.z;
-      const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (L < 1e-10) continue;
-
-      const lx = dx / L, ly = dy / L, lz = dz / L;
-
-      // Perpendicular direction for diagram offset (approximate: use Z-up cross product)
-      let px: number, py: number, pz: number;
-      if (Math.abs(lz) > 0.95) {
-        // Nearly vertical: use Y direction
-        px = 0; py = 1; pz = 0;
-      } else {
-        // Cross with Z-up
-        const cx = ly * 1 - lz * 0;
-        const cy = lz * 0 - lx * 1;
-        const cz = lx * 0 - ly * 0;
-        const cl = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
-        px = cx / cl; py = cy / cl; pz = cz / cl;
-      }
-
-      // Build ribbon (line strip of offset positions)
-      const ribbonPositions: number[] = [];
-      const ribbonColors: number[] = [];
-
-      for (const p of pts) {
-        const t = L > 0 ? p.x / L : 0;
-        const bx = ni.x + dx * t;
-        const by = ni.y + dy * t;
-        const bz = ni.z + dz * t;
-
-        const val = this.getDiagramValue(p, mode);
-        const offset = val * scale;
-
-        ribbonPositions.push(
-          bx + px * offset,
-          by + py * offset,
-          bz + pz * offset,
-        );
-
-        const c = val >= 0 ? DIAGRAM_COLOR_POS : DIAGRAM_COLOR_NEG;
-        ribbonColors.push(c.r, c.g, c.b);
-      }
-
-      if (ribbonPositions.length >= 6) {
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(ribbonPositions, 3));
-        geo.setAttribute('color', new THREE.Float32BufferAttribute(ribbonColors, 3));
-        const mat = new THREE.LineBasicMaterial({ vertexColors: true });
-        this.resultGroup.add(new THREE.Line(geo, mat));
-      }
-
-      // Base line (member axis for reference)
-      const baseGeo = new THREE.BufferGeometry();
-      baseGeo.setAttribute('position', new THREE.Float32BufferAttribute([
-        ni.x, ni.y, ni.z, nj.x, nj.y, nj.z
-      ], 3));
-      const baseMat = new THREE.LineBasicMaterial({ color: 0x666666 });
-      this.resultGroup.add(new THREE.LineSegments(baseGeo, baseMat));
-    }
-  }
-
-  private getDiagramValue(point: DiagramPoint, mode: DisplayMode): number {
-    switch (mode) {
-      case 'N': return point.N;
-      case 'Vy': return point.Vy;
-      case 'Vz': return point.Vz;
-      case 'Mx': return point.Mx;
-      case 'My': return point.My;
-      case 'Mz': return point.Mz;
-      default: return 0;
-    }
-  }
-
-  private getDiagramOffsetDirection(ni: { x: number; y: number; z: number }, nj: { x: number; y: number; z: number }): THREE.Vector3 | null {
-    const dx = nj.x - ni.x;
-    const dy = nj.y - ni.y;
-    const dz = nj.z - ni.z;
-    const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
-    if (L < 1e-10) return null;
-
-    const lx = dx / L, ly = dy / L, lz = dz / L;
-    if (Math.abs(lz) > 0.95) {
-      return new THREE.Vector3(0, 1, 0);
-    }
-
-    const cx = ly;
-    const cy = -lx;
-    const cz = 0;
-    const cl = Math.sqrt(cx * cx + cy * cy + cz * cz) || 1;
-    return new THREE.Vector3(cx / cl, cy / cl, cz / cl);
-  }
-
-  private formatDiagramValue(value: number): string {
-    if (Math.abs(value) < 1e-10) return '0';
-    const abs = Math.abs(value);
-    if (abs >= 10000 || abs < 0.001) return value.toExponential(2);
-    return value.toFixed(abs >= 100 ? 1 : 3).replace(/\.?0+$/, '');
-  }
-
-  // ── Labels ──
-
-  private projectToScreen(pos: THREE.Vector3, tmp: THREE.Vector3): { x: number; y: number } | null {
-    tmp.copy(pos).project(this.camera);
-    if (tmp.z <= 0 || tmp.z >= 1) return null;
-    return {
-      x: (tmp.x * 0.5 + 0.5) * this.labelCanvas.width,
-      y: (-tmp.y * 0.5 + 0.5) * this.labelCanvas.height,
-    };
+  private updateDeformation(): void {
+    if (!this.deformationGeometry) return;
+    const animationFactor = this.animateDeformation ? this.deformationAnimationFactor : 1;
+    updateDeformationGeometry(this.deformationGeometry, this.deformationScale * animationFactor);
   }
 
   private drawLabels(): void {
-    this.labelCtx.clearRect(0, 0, this.labelCanvas.width, this.labelCanvas.height);
-    if (!this.model) return;
-    const shouldDrawDiagramLabels = this.result && this.displayMode !== 'model' && this.displayMode !== 'deformation';
-    if (!this.showNodeLabels && !this.showMemberLabels && !shouldDrawDiagramLabels) return;
-
-    this.labelCtx.font = LABEL_FONT;
-    this.labelCtx.textAlign = 'center';
-    this.labelCtx.textBaseline = 'bottom';
-
-    const tmp = new THREE.Vector3();
-    const wp = new THREE.Vector3();
-    const colors = this.isDark ? THEME_COLORS.dark : THEME_COLORS.light;
-
-    if (this.showNodeLabels) {
-      this.labelCtx.fillStyle = colors.labelNode;
-      for (const n of this.model.nodes) {
-        wp.set(n.x, n.y, n.z);
-        const s = this.projectToScreen(wp, tmp);
-        if (s) this.labelCtx.fillText(n.id, s.x, s.y - 6);
-      }
-    }
-
-    if (this.showMemberLabels) {
-      this.labelCtx.fillStyle = colors.labelMember;
-      const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-      for (const m of this.model.members) {
-        const ni = nodeMap.get(m.ni);
-        const nj = nodeMap.get(m.nj);
-        if (!ni || !nj) continue;
-        wp.set((ni.x + nj.x) / 2, (ni.y + nj.y) / 2, (ni.z + nj.z) / 2);
-        const s = this.projectToScreen(wp, tmp);
-        if (s) this.labelCtx.fillText(m.id, s.x, s.y - 4);
-      }
-    }
-
-    if (shouldDrawDiagramLabels) {
-      this.drawDiagramValueLabels(tmp, colors);
-    }
+    this.labelOverlay.draw({
+      model: this.model,
+      result: this.result,
+      camera: this.camera,
+      displayMode: this.displayMode,
+      diagramScale: this.diagramScale,
+      isDark: this.isDark,
+      showNodeLabels: this.showNodeLabels,
+      showMemberLabels: this.showMemberLabels,
+      labelMode: this.labelMode,
+      selectedNodeIds: this.selectedNodeIds,
+      selectedMemberIds: this.selectedMemberIds,
+    });
   }
 
-  private drawDiagramValueLabels(
-    tmp: THREE.Vector3,
-    colors: typeof THEME_COLORS.dark | typeof THEME_COLORS.light
-  ): void {
-    if (!this.model || !this.result) return;
-
-    const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-    const wp = new THREE.Vector3();
-
-    this.labelCtx.font = LABEL_FONT;
-    this.labelCtx.textAlign = 'left';
-    this.labelCtx.textBaseline = 'middle';
-
-    for (const m of this.model.members) {
-      const ni = nodeMap.get(m.ni);
-      const nj = nodeMap.get(m.nj);
-      const diagData = this.result.diagrams[m.id];
-      if (!ni || !nj || !diagData || diagData.points.length === 0) continue;
-
-      const dx = nj.x - ni.x;
-      const dy = nj.y - ni.y;
-      const dz = nj.z - ni.z;
-      const length = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (length < 1e-10) continue;
-
-      const offsetDirection = this.getDiagramOffsetDirection(ni, nj);
-      if (!offsetDirection) continue;
-
-      let maxPoint: DiagramPoint | null = null;
-      let maxValue = 0;
-      for (const point of diagData.points) {
-        const value = this.getDiagramValue(point, this.displayMode);
-        if (!maxPoint || Math.abs(value) > Math.abs(maxValue)) {
-          maxPoint = point;
-          maxValue = value;
-        }
-      }
-      if (!maxPoint || Math.abs(maxValue) < 1e-10) continue;
-
-      const t = maxPoint.x / length;
-      wp.set(
-        ni.x + dx * t,
-        ni.y + dy * t,
-        ni.z + dz * t
-      ).add(offsetDirection.clone().multiplyScalar(maxValue * this.diagramScale));
-
-      const screen = this.projectToScreen(wp, tmp);
-      if (!screen) continue;
-
-      const text = `${this.displayMode} ${this.formatDiagramValue(maxValue)}`;
-      const paddingX = 4;
-      const width = this.labelCtx.measureText(text).width + paddingX * 2;
-      const height = 16;
-      const x = screen.x + 6;
-      const y = screen.y - 6;
-      this.labelCtx.fillStyle = colors.labelBackground;
-      this.labelCtx.fillRect(x - paddingX, y - height / 2, width, height);
-      this.labelCtx.fillStyle = colors.labelDiagram;
-      this.labelCtx.fillText(text, x, y);
-    }
-  }
-
-  // ── Picking ──
-
-  private onPointerDown = (e: PointerEvent): void => {
-    if (e.button !== 0) return;
-    this.pointerDownPos = { x: e.clientX, y: e.clientY };
+  private onPointerDown = (event: PointerEvent): void => {
+    if (event.button !== 0) return;
+    this.pointerDownPos = { x: event.clientX, y: event.clientY };
     this.isDragging = false;
+    if (this.editTool !== 'select' || !this.model) return;
+    const point = this.localPointer(event);
+    const hit = this.pickNode(point.x, point.y);
+    if (!hit) return;
+    const node = this.model.nodes.find((item) => item.id === hit.nodeId);
+    if (!node) return;
+    this.draggingNodeId = node.id;
+    this.draggingNodeOriginal = { x: node.x, y: node.y, z: node.z };
+  };
 
-    // Start drag if select tool and a node is under the pointer
-    if (this.editTool === 'select' && this.model) {
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      const hit = this.pickNode(e.clientX - rect.left, e.clientY - rect.top);
-      if (hit) {
-        this.draggingNodeId = hit.nodeId;
-        const node = this.model.nodes.find(n => n.id === hit.nodeId);
-        this.draggingNodeZ = node?.z ?? 0;
+  private onPointerMove = (event: PointerEvent): void => {
+    const point = this.localPointer(event);
+    if (this.pointerDownPos && this.draggingNodeId && this.draggingNodeOriginal) {
+      const dx = event.clientX - this.pointerDownPos.x;
+      const dy = event.clientY - this.pointerDownPos.y;
+      if (!this.isDragging && dx * dx + dy * dy > CLICK_DRAG_THRESHOLD ** 2) {
+        this.isDragging = true;
+        this.controls.enabled = false;
+      }
+      if (this.isDragging) {
+        const offset = normalCoordinate(this.draggingNodeOriginal, this.workPlaneAxis);
+        const preview = this.screenToPlane(point.x, point.y, this.workPlaneAxis, offset);
+        if (preview) {
+          this.dragPreview = preview;
+          this.rebuildInteractionOverlay();
+        }
+        this.updateCursor();
+        return;
       }
     }
-  };
 
-  private onPointerMove = (e: PointerEvent): void => {
-    if (!this.pointerDownPos || !this.draggingNodeId) return;
-    const dx = e.clientX - this.pointerDownPos.x;
-    const dy = e.clientY - this.pointerDownPos.y;
-    if (!this.isDragging && dx * dx + dy * dy > CLICK_DRAG_THRESHOLD * CLICK_DRAG_THRESHOLD) {
-      this.isDragging = true;
-      this.controls.enabled = false; // disable orbit while dragging node
-    }
-    if (!this.isDragging) return;
-
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    const pos = this.screenToPlane(e.clientX - rect.left, e.clientY - rect.top, this.draggingNodeZ);
-    if (pos) {
-      this.onEditAction?.({ kind: 'moveNode', nodeId: this.draggingNodeId, x: pos.x, y: pos.y, z: pos.z });
+    this.updateHover(point.x, point.y);
+    if (this.editTool === 'addMember' && this.pendingMemberStart) {
+      const nodeHit = this.pickNode(point.x, point.y);
+      const targetNode = nodeHit && this.model?.nodes.find((node) => node.id === nodeHit.nodeId);
+      this.rubberBandTarget = targetNode
+        ? { x: targetNode.x, y: targetNode.y, z: targetNode.z }
+        : this.screenToPlane(point.x, point.y, this.workPlaneAxis, this.workPlaneOffset);
+      this.rebuildInteractionOverlay();
     }
   };
 
-  private onPointerUp = (e: PointerEvent): void => {
-    if (e.button !== 0 || !this.pointerDownPos) return;
+  private onPointerLeave = (): void => {
+    if (this.isDragging) return;
+    this.setHover(null, null);
+    if (this.pendingMemberStart) {
+      this.rubberBandTarget = null;
+      this.rebuildInteractionOverlay();
+    }
+  };
 
+  private onPointerUp = (event: PointerEvent): void => {
+    if (event.button !== 0 || !this.pointerDownPos) return;
     const wasDragging = this.isDragging;
+    const draggedNodeId = this.draggingNodeId;
+    const finalPosition = this.dragPreview;
     this.pointerDownPos = null;
     this.draggingNodeId = null;
+    this.draggingNodeOriginal = null;
+    this.dragPreview = null;
     this.isDragging = false;
     this.controls.enabled = true;
+    this.rebuildInteractionOverlay();
+    this.updateCursor();
 
-    if (wasDragging) return; // drag completed, don't fire click
-
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    this.handleClick(x, y, e.shiftKey);
-  };
-
-  private onKeyDown = (e: KeyboardEvent): void => {
-    // Ignore shortcuts when focus is inside a form element
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
-        (e.target as HTMLElement)?.isContentEditable) {
+    if (wasDragging) {
+      if (draggedNodeId && finalPosition) {
+        this.onEditAction?.({ kind: 'moveNode', nodeId: draggedNodeId, ...finalPosition });
+      }
       return;
     }
+    const point = this.localPointer(event);
+    this.handleClick(point.x, point.y, event.shiftKey);
+  };
 
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      e.preventDefault();
+  private onKeyDown = (event: KeyboardEvent): void => {
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return;
+
+    if (event.key === 'Delete' || event.key === 'Backspace') {
+      if (hasOpenModalDialog()) return;
+      event.preventDefault();
       this.onEditAction?.({ kind: 'deleteSelected' });
-    } else if (e.key === 'Escape') {
+    } else if (event.key === 'Escape') {
       this.pendingMemberStart = null;
+      this.rubberBandTarget = null;
+      this.rebuildNodes();
+      this.rebuildInteractionOverlay();
       this.onEditAction?.({ kind: 'cancelOperation' });
     }
   };
 
-  private handleClick(x: number, y: number, shift = false): void {
-    if (!this.model) return;
+  private localPointer(event: PointerEvent): { x: number; y: number } {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
 
+  private handleClick(x: number, y: number, multi: boolean): void {
+    if (!this.model) return;
     switch (this.editTool) {
-      case 'addNode':
-        return this.handleAddNode(x, y);
-      case 'addMember':
-        return this.handleAddMember(x, y);
-      case 'setSupport':
-        return this.handleSetSupport(x, y);
-      case 'addNodalLoad':
-        return this.handleAddNodalLoad(x, y);
-      case 'addMemberLoad':
-        return this.handleAddMemberLoad(x, y);
-      default:
-        return this.handleSelect(x, y, shift);
+      case 'addNode': this.handleAddNode(x, y); break;
+      case 'addMember': this.handleAddMember(x, y); break;
+      case 'setSupport': this.handleSetSupport(x, y); break;
+      case 'addNodalLoad': this.handleAddNodalLoad(x, y); break;
+      case 'addMemberLoad': this.handleAddMemberLoad(x, y); break;
+      case 'select': this.handleSelect(x, y, multi); break;
     }
   }
 
-  private handleSelect(x: number, y: number, multi = false): void {
+  private handleSelect(x: number, y: number, multi: boolean): void {
     const nodeHit = this.pickNode(x, y);
     const memberHit = this.pickMember(x, y);
-
     if (nodeHit && memberHit) {
-      const ns = nodeHit.distSq / (NODE_PICK_RADIUS * NODE_PICK_RADIUS);
-      const ms = memberHit.distSq / (MEMBER_PICK_RADIUS * MEMBER_PICK_RADIUS);
-      const sel = ns <= ms
-        ? { kind: 'node' as const, nodeId: nodeHit.nodeId }
-        : { kind: 'member' as const, memberId: memberHit.memberId };
-      this.onSelectionChanged?.(sel, multi);
-      return;
-    }
-    if (nodeHit) {
+      const nodeScore = nodeHit.distSq / NODE_PICK_RADIUS ** 2;
+      const memberScore = memberHit.distSq / MEMBER_PICK_RADIUS ** 2;
+      const selection: ViewerSelection = nodeScore <= memberScore
+        ? { kind: 'node', nodeId: nodeHit.nodeId }
+        : { kind: 'member', memberId: memberHit.memberId };
+      this.onSelectionChanged?.(selection, multi);
+    } else if (nodeHit) {
       this.onSelectionChanged?.({ kind: 'node', nodeId: nodeHit.nodeId }, multi);
-      return;
-    }
-    if (memberHit) {
+    } else if (memberHit) {
       this.onSelectionChanged?.({ kind: 'member', memberId: memberHit.memberId }, multi);
-      return;
-    }
-    if (!multi) {
+    } else if (!multi) {
       this.onSelectionChanged?.({ kind: 'none' }, false);
     }
   }
 
-  /** Raycast from screen (x,y) to a Z-plane at given height, returning world coords. */
-  private screenToPlane(x: number, y: number, planeZ = 0): { x: number; y: number; z: number } | null {
-    const w = this.renderer.domElement.clientWidth;
-    const h = this.renderer.domElement.clientHeight;
-    const ndcX = (x / w) * 2 - 1;
-    const ndcY = -(y / h) * 2 + 1;
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
-    const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -planeZ);
-    const target = new THREE.Vector3();
-    const hit = raycaster.ray.intersectPlane(plane, target);
-    if (!hit) return null;
-    return {
-      x: this.snapCoordinate(target.x),
-      y: this.snapCoordinate(target.y),
-      z: planeZ,
-    };
-  }
-
-  private snapCoordinate(value: number): number {
-    if (!this.gridSnap) return value;
-    return Math.round(value / this.gridSize) * this.gridSize;
-  }
-
   private handleAddNode(x: number, y: number): void {
-    const pos = this.screenToPlane(x, y);
-    if (!pos) return;
-    this.onEditAction?.({ kind: 'addNode', x: pos.x, y: pos.y, z: pos.z });
+    const position = this.screenToPlane(x, y, this.workPlaneAxis, this.workPlaneOffset);
+    if (position) this.onEditAction?.({ kind: 'addNode', ...position });
   }
 
   private handleAddMember(x: number, y: number): void {
@@ -962,102 +554,192 @@ export class ThreeApp {
     if (!this.pendingMemberStart) {
       this.pendingMemberStart = nodeHit.nodeId;
       this.onSelectionChanged?.({ kind: 'node', nodeId: nodeHit.nodeId }, false);
-    } else {
-      if (nodeHit.nodeId !== this.pendingMemberStart) {
-        this.onEditAction?.({ kind: 'addMember', ni: this.pendingMemberStart, nj: nodeHit.nodeId });
-      }
-      this.pendingMemberStart = null;
+      this.rebuildNodes();
+      this.rebuildInteractionOverlay();
+      return;
     }
+    if (nodeHit.nodeId !== this.pendingMemberStart) {
+      this.onEditAction?.({ kind: 'addMember', ni: this.pendingMemberStart, nj: nodeHit.nodeId });
+    }
+    this.pendingMemberStart = null;
+    this.rubberBandTarget = null;
+    this.rebuildNodes();
+    this.rebuildInteractionOverlay();
   }
 
   private handleSetSupport(x: number, y: number): void {
-    const nodeHit = this.pickNode(x, y);
-    if (!nodeHit) return;
-    this.onEditAction?.({ kind: 'setSupport', nodeId: nodeHit.nodeId });
+    const hit = this.pickNode(x, y);
+    if (hit) this.onEditAction?.({ kind: 'setSupport', nodeId: hit.nodeId });
   }
 
   private handleAddNodalLoad(x: number, y: number): void {
-    const nodeHit = this.pickNode(x, y);
-    if (!nodeHit) return;
-    this.onEditAction?.({ kind: 'addNodalLoad', nodeId: nodeHit.nodeId });
+    const hit = this.pickNode(x, y);
+    if (hit) this.onEditAction?.({ kind: 'addNodalLoad', nodeId: hit.nodeId });
   }
 
   private handleAddMemberLoad(x: number, y: number): void {
-    const memberHit = this.pickMember(x, y);
-    if (!memberHit) return;
-    this.onEditAction?.({ kind: 'addMemberLoad', memberId: memberHit.memberId });
+    const hit = this.pickMember(x, y);
+    if (hit) this.onEditAction?.({ kind: 'addMemberLoad', memberId: hit.memberId });
   }
 
   private pickNode(x: number, y: number): { nodeId: string; distSq: number } | null {
     if (!this.model) return null;
-    const tmp = new THREE.Vector3();
-    const wp = new THREE.Vector3();
-    let best: { nodeId: string; distSq: number } | null = null;
-    const rSq = NODE_PICK_RADIUS * NODE_PICK_RADIUS;
-
-    for (const n of this.model.nodes) {
-      wp.set(n.x, n.y, n.z);
-      const s = this.projectToScreen(wp, tmp);
-      if (!s) continue;
-      const d = (s.x - x) ** 2 + (s.y - y) ** 2;
-      if (d > rSq) continue;
-      if (!best || d < best.distSq) best = { nodeId: n.id, distSq: d };
-    }
-    return best;
+    return pickNode(
+      this.model,
+      this.camera,
+      this.renderer.domElement.clientWidth,
+      this.renderer.domElement.clientHeight,
+      x,
+      y,
+      NODE_PICK_RADIUS,
+    );
   }
 
   private pickMember(x: number, y: number): { memberId: string; distSq: number } | null {
     if (!this.model) return null;
-    const nodeMap = new Map(this.model.nodes.map(n => [n.id, n]));
-    const tmp = new THREE.Vector3();
-    const wp = new THREE.Vector3();
-    let best: { memberId: string; distSq: number } | null = null;
-    const rSq = MEMBER_PICK_RADIUS * MEMBER_PICK_RADIUS;
+    return pickMember(
+      this.model,
+      this.camera,
+      this.renderer.domElement.clientWidth,
+      this.renderer.domElement.clientHeight,
+      x,
+      y,
+      MEMBER_PICK_RADIUS,
+    );
+  }
 
-    for (const m of this.model.members) {
-      const ni = nodeMap.get(m.ni);
-      const nj = nodeMap.get(m.nj);
-      if (!ni || !nj) continue;
+  private screenToPlane(
+    x: number,
+    y: number,
+    axis: WorkPlaneAxis,
+    offset: number,
+  ): Position3 | null {
+    const width = this.renderer.domElement.clientWidth;
+    const height = this.renderer.domElement.clientHeight;
+    if (width <= 0 || height <= 0) return null;
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2((x / width) * 2 - 1, -(y / height) * 2 + 1), this.camera);
+    const target = new THREE.Vector3();
+    const hit = raycaster.ray.intersectPlane(createWorkPlane(axis, offset), target);
+    if (!hit) return null;
+    return snapPosition(target, axis, offset, (value) => this.snapCoordinate(value));
+  }
 
-      wp.set(ni.x, ni.y, ni.z);
-      const a = this.projectToScreen(wp, tmp);
-      wp.set(nj.x, nj.y, nj.z);
-      const b = this.projectToScreen(wp, tmp);
-      if (!a || !b) continue;
+  private snapCoordinate(value: number): number {
+    if (!this.gridSnap) return value;
+    return Math.round(value / this.gridSize) * this.gridSize;
+  }
 
-      const d = pointToSegmentDistSq(x, y, a.x, a.y, b.x, b.y);
-      if (d > rSq) continue;
-      if (!best || d < best.distSq) best = { memberId: m.id, distSq: d };
+  private updateHover(x: number, y: number): void {
+    const nodeHit = this.pickNode(x, y);
+    const memberHit = this.pickMember(x, y);
+    this.setHover(nodeHit?.nodeId ?? null, nodeHit ? null : memberHit?.memberId ?? null);
+  }
+
+  private setHover(nodeId: string | null, memberId: string | null): void {
+    if (this.hoveredNodeId === nodeId && this.hoveredMemberId === memberId) {
+      this.updateCursor();
+      return;
     }
-    return best;
+    const nodeChanged = this.hoveredNodeId !== nodeId;
+    const memberChanged = this.hoveredMemberId !== memberId;
+    this.hoveredNodeId = nodeId;
+    this.hoveredMemberId = memberId;
+    if (nodeChanged) this.rebuildNodes();
+    if (memberChanged) this.rebuildMembers();
+    this.updateCursor();
+  }
+
+  private updateCursor(): void {
+    let cursor = 'crosshair';
+    if (this.isDragging) cursor = 'grabbing';
+    else if (this.editTool === 'select' && this.hoveredNodeId) cursor = 'grab';
+    else if (this.hoveredNodeId || this.hoveredMemberId) cursor = 'pointer';
+    else if (this.editTool === 'select') cursor = 'default';
+    this.renderer.domElement.style.cursor = cursor;
+  }
+
+  private rebuildInteractionOverlay(): void {
+    clearGroup(this.interactionGroup);
+    if (!this.model) return;
+    const nodeMap = new Map(this.model.nodes.map((node) => [node.id, node]));
+    if (this.draggingNodeId && this.dragPreview) {
+      const previewPositions: number[] = [];
+      for (const member of this.model.members) {
+        if (member.ni !== this.draggingNodeId && member.nj !== this.draggingNodeId) continue;
+        const otherId = member.ni === this.draggingNodeId ? member.nj : member.ni;
+        const other = nodeMap.get(otherId);
+        if (!other) continue;
+        previewPositions.push(
+          this.dragPreview.x, this.dragPreview.y, this.dragPreview.z,
+          other.x, other.y, other.z,
+        );
+      }
+      if (previewPositions.length > 0) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(previewPositions, 3));
+        this.interactionGroup.add(new THREE.LineSegments(
+          geometry,
+          new THREE.LineDashedMaterial({ color: 0xffaa00, dashSize: 6, gapSize: 3 }),
+        ));
+        const line = this.interactionGroup.children[this.interactionGroup.children.length - 1];
+        if (line instanceof THREE.LineSegments) line.computeLineDistances();
+      }
+      const geometry = new THREE.SphereGeometry(4, 12, 8);
+      const material = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+      const marker = new THREE.Mesh(geometry, material);
+      marker.position.set(this.dragPreview.x, this.dragPreview.y, this.dragPreview.z);
+      this.interactionGroup.add(marker);
+    }
+
+    if (this.pendingMemberStart && this.rubberBandTarget) {
+      const start = nodeMap.get(this.pendingMemberStart);
+      if (start) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+          start.x, start.y, start.z,
+          this.rubberBandTarget.x, this.rubberBandTarget.y, this.rubberBandTarget.z,
+        ], 3));
+        const line = new THREE.Line(
+          geometry,
+          new THREE.LineDashedMaterial({ color: 0xff44cc, dashSize: 8, gapSize: 4 }),
+        );
+        line.computeLineDistances();
+        this.interactionGroup.add(line);
+      }
+    }
+  }
+
+  private cancelDragPreview(): void {
+    this.pointerDownPos = null;
+    this.draggingNodeId = null;
+    this.draggingNodeOriginal = null;
+    this.dragPreview = null;
+    this.isDragging = false;
+    this.controls.enabled = true;
+    this.rebuildInteractionOverlay();
   }
 
   dispose(): void {
     cancelAnimationFrame(this.animationId);
-    window.removeEventListener('resize', this.onResizeBound);
+    this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove);
+    this.renderer.domElement.removeEventListener('pointerleave', this.onPointerLeave);
     window.removeEventListener('pointerup', this.onPointerUp);
     window.removeEventListener('keydown', this.onKeyDown);
-    this.clearGroup(this.nodeGroup);
-    this.clearGroup(this.memberGroup);
-    this.clearGroup(this.resultGroup);
-    this.clearGroup(this.supportGroup);
-    this.clearGroup(this.loadGroup);
+    clearGroup(this.nodeGroup);
+    clearGroup(this.memberGroup);
+    clearGroup(this.resultGroup);
+    clearGroup(this.supportGroup);
+    clearGroup(this.loadGroup);
+    clearGroup(this.interactionGroup);
+    this.scene.remove(this.grid, this.axesHelper);
+    disposeObject(this.grid);
+    disposeObject(this.axesHelper);
     this.controls.dispose();
     this.renderer.dispose();
     this.renderer.domElement.remove();
-    this.labelCanvas.remove();
+    this.labelOverlay.dispose();
   }
-}
-
-function pointToSegmentDistSq(
-  px: number, py: number,
-  ax: number, ay: number, bx: number, by: number
-): number {
-  const abx = bx - ax, aby = by - ay;
-  const lenSq = abx * abx + aby * aby;
-  if (lenSq <= 1e-8) return (px - ax) ** 2 + (py - ay) ** 2;
-  const t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / lenSq));
-  return (px - ax - t * abx) ** 2 + (py - ay - t * aby) ** 2;
 }

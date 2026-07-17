@@ -74,12 +74,18 @@ export const HelpDialog: React.FC<Props> = ({ open, onClose }) => {
   ];
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
+    <div className="modal-overlay" role="presentation" onClick={onClose}>
+      <section
+        className="modal-content"
+        role="dialog"
+        aria-modal="true"
+        aria-label={t('help.title')}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="modal-header">
           <h2>{t('help.title')}</h2>
-          <button onClick={onClose}>{t('help.close')}</button>
-        </div>
+          <button type="button" onClick={onClose}>{t('help.close')}</button>
+        </header>
         <div className="modal-body">
           {sections.map((sec) => (
             <div key={sec.title} className="help-section">
@@ -92,7 +98,7 @@ export const HelpDialog: React.FC<Props> = ({ open, onClose }) => {
             </div>
           ))}
         </div>
-      </div>
+      </section>
     </div>
   );
 };

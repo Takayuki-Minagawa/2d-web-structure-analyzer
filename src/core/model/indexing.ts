@@ -3,11 +3,16 @@ import type {
   IndexedModel,
   IndexedNode,
   IndexedMember,
+  IndexedNodalSpringSupport,
   EndRelease,
   NodeId,
   MemberId,
 } from './types';
 import { getAnalysisMode, getEffectiveRestraint } from './analysisMode';
+import { computeMemberLocalAxes } from './localAxes';
+import { resolveDofMap } from './couplings';
+import { buildLocalStiffness } from '../analysis/element3dFrame';
+import { buildTransformationMatrix } from '../analysis/transforms';
 import {
   collectTorsionRestraintSourceDofs,
   formatUnsupportedTorsionRestraintMessage,
@@ -17,72 +22,31 @@ const RIGID: EndRelease = { type: 'rigid', kTheta: 0 };
 const PIN: EndRelease = { type: 'pin', kTheta: 0 };
 
 /**
- * Compute the 3x3 direction cosine matrix (lambda) for a 3D member.
- */
-function computeLambda(
-  dx: number, dy: number, dz: number, L: number, codeAngle: number
-): Float64Array {
-  const lambda = new Float64Array(9);
-
-  const lx_x = dx / L;
-  const lx_y = dy / L;
-  const lx_z = dz / L;
-
-  const isVertical = Math.abs(lx_z) > 0.95;
-  const vx = isVertical ? 1 : 0;
-  const vy = 0;
-  const vz = isVertical ? 0 : 1;
-
-  let cy_x = vy * lx_z - vz * lx_y;
-  let cy_y = vz * lx_x - vx * lx_z;
-  let cy_z = vx * lx_y - vy * lx_x;
-  const cyLen = Math.sqrt(cy_x * cy_x + cy_y * cy_y + cy_z * cy_z);
-  cy_x /= cyLen; cy_y /= cyLen; cy_z /= cyLen;
-
-  let cz_x = lx_y * cy_z - lx_z * cy_y;
-  let cz_y = lx_z * cy_x - lx_x * cy_z;
-  let cz_z = lx_x * cy_y - lx_y * cy_x;
-
-  if (codeAngle !== 0) {
-    const theta = codeAngle * Math.PI / 180;
-    const cosT = Math.cos(theta);
-    const sinT = Math.sin(theta);
-
-    const ly_x = cy_x * cosT + cz_x * sinT;
-    const ly_y = cy_y * cosT + cz_y * sinT;
-    const ly_z = cy_z * cosT + cz_z * sinT;
-
-    const lz_x = -cy_x * sinT + cz_x * cosT;
-    const lz_y = -cy_y * sinT + cz_y * cosT;
-    const lz_z = -cy_z * sinT + cz_z * cosT;
-
-    cy_x = ly_x; cy_y = ly_y; cy_z = ly_z;
-    cz_x = lz_x; cz_y = lz_y; cz_z = lz_z;
-  }
-
-  lambda[0] = lx_x; lambda[1] = lx_y; lambda[2] = lx_z;
-  lambda[3] = cy_x; lambda[4] = cy_y; lambda[5] = cy_z;
-  lambda[6] = cz_x; lambda[7] = cz_y; lambda[8] = cz_z;
-  return lambda;
-}
-
-/**
  * Resolve a spring number to an EndRelease using the Spring table.
  * Convention (matching FrameModelMaker-Web):
  *   spring number 0 → rigid (no spring defined)
  *   spring number 1 → rigid (default rigid)
  *   spring number 2 → pin   (default pin)
- *   spring number ≥ 3 → look up in springs table
+ *   spring number ≥ 3 → finite spring when kTheta > 0, pin when kTheta = 0
+ *
+ * FrameModelMaker-Web reserves 1/2 for the connection types. A custom
+ * spring's `method` is source-format metadata, not a rigid/pin selector.
  */
 function resolveSpring(
   springNumber: number,
-  springMap: Map<number, { method: number; kTheta: number }>
+  springMap: Map<number, { kTheta: number }>
 ): EndRelease {
-  if (springNumber <= 0 || springNumber === 1) return RIGID;
+  if (!Number.isInteger(springNumber) || springNumber < 0) {
+    throw new Error(`回転バネ番号が非負整数ではありません (${springNumber})。`);
+  }
+  if (springNumber === 0 || springNumber === 1) return RIGID;
   if (springNumber === 2) return PIN;
   const sp = springMap.get(springNumber);
-  if (!sp) return RIGID;
-  if (sp.method === 0 || sp.kTheta <= 0) return PIN;
+  if (!sp) throw new Error(`回転バネ番号 ${springNumber} が見つかりません。`);
+  if (!Number.isFinite(sp.kTheta) || sp.kTheta < 0) {
+    throw new Error(`回転バネ番号 ${springNumber} の剛性が不正です (kTheta=${sp.kTheta})。`);
+  }
+  if (sp.kTheta === 0) return PIN;
   return { type: 'spring', kTheta: sp.kTheta };
 }
 
@@ -95,13 +59,22 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
     throw new Error(formatUnsupportedTorsionRestraintMessage(torsionDofs.unsupportedMembers[0]!.id));
   }
   const extraFixedDofs = torsionDofs.entries.map((entry) => entry.sourceDof);
+  const sectionById = new Map(model.sections.map((section) => [section.id, section]));
+  const materialById = new Map(model.materials.map((material) => [material.id, material]));
 
   // Build spring lookup
-  const springMap = new Map(
-    (model.springs ?? []).map(s => [s.number, { method: s.method, kTheta: s.kTheta }])
-  );
+  const springMap = new Map<number, { kTheta: number }>();
+  for (const spring of model.springs ?? []) {
+    if (springMap.has(spring.number)) {
+      throw new Error(`バネ番号 ${spring.number} が重複しています。`);
+    }
+    springMap.set(spring.number, { kTheta: spring.kTheta });
+  }
 
   const nodes: IndexedNode[] = model.nodes.map((n, i) => {
+    if (nodeIdToIndex.has(n.id)) {
+      throw new Error(`節点 ID "${n.id}" が重複しています。`);
+    }
     nodeIdToIndex.set(n.id, i);
     return {
       index: i,
@@ -114,6 +87,9 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
   });
 
   const members: IndexedMember[] = model.members.map((m, i) => {
+    if (memberIdToIndex.has(m.id)) {
+      throw new Error(`部材 ID "${m.id}" が重複しています。`);
+    }
     memberIdToIndex.set(m.id, i);
 
     const niIdx = nodeIdToIndex.get(m.ni);
@@ -126,22 +102,21 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
 
     const nodeI = nodes[niIdx]!;
     const nodeJ = nodes[njIdx]!;
-    const dx = nodeJ.x - nodeI.x;
-    const dy = nodeJ.y - nodeI.y;
-    const dz = nodeJ.z - nodeI.z;
-    const L = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    const axes = computeMemberLocalAxes(nodeI, nodeJ, m.codeAngle);
+    if (!axes) {
+      throw new Error(`部材 ${m.id} の形状またはコード角が不正です。`);
+    }
+    const { length: L, lambda } = axes;
 
-    const section = model.sections.find((sec) => sec.id === m.sectionId);
+    const section = sectionById.get(m.sectionId);
     if (!section) {
       throw new Error(`部材 ${m.id} の断面 ${m.sectionId} が見つかりません`);
     }
 
-    const material = model.materials.find((mat) => mat.id === section.materialId);
+    const material = materialById.get(section.materialId);
     if (!material) {
       throw new Error(`断面 ${section.id} の材料 ${section.materialId} が見つかりません`);
     }
-
-    const lambda = computeLambda(dx, dy, dz, L, m.codeAngle);
 
     // Resolve end releases from spring numbers
     const iSpr = m.iSprings ?? { x: 0, y: 0, z: 0 };
@@ -155,7 +130,7 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
       resolveSpring(jSpr.z, springMap), // jz → DOF 11
     ];
 
-    return {
+    const indexedMember: IndexedMember = {
       index: i,
       id: m.id,
       ni: niIdx,
@@ -168,42 +143,44 @@ export function buildIndexedModel(model: ProjectModel): IndexedModel {
       Iz: section.Iz,
       ky: section.ky,
       kz: section.kz,
+      expansion: material.expansion,
+      density: material.density ?? 0,
       L,
       lambda,
       releases,
     };
+    indexedMember.localStiffness = buildLocalStiffness(indexedMember);
+    indexedMember.transformation = buildTransformationMatrix(indexedMember);
+    return indexedMember;
   });
 
   const nodeCount = nodes.length;
   const dofCount = nodeCount * 6;
 
-  // Build DOF mapping for coupling constraints (master-slave)
-  const dofMap = new Int32Array(dofCount);
-  for (let i = 0; i < dofCount; i++) dofMap[i] = i;
+  const dofMap = resolveDofMap(model, nodeIdToIndex);
 
-  const couplings = model.couplings ?? [];
-  for (const c of couplings) {
-    const masterIdx = nodeIdToIndex.get(c.masterNodeId);
-    const slaveIdx = nodeIdToIndex.get(c.slaveNodeId);
-    if (masterIdx === undefined || slaveIdx === undefined) continue;
-
-    const flags = [c.ux, c.uy, c.uz, c.rx, c.ry, c.rz];
-    for (let d = 0; d < 6; d++) {
-      if (!flags[d]) continue;
-      const slaveDof = slaveIdx * 6 + d;
-      const masterDof = masterIdx * 6 + d;
-      // Resolve chain: if master itself is a slave, follow the chain
-      let resolved = masterDof;
-      while (dofMap[resolved] !== resolved) resolved = dofMap[resolved]!;
-      dofMap[slaveDof] = resolved;
+  const nodeSpringIds = new Set<string>();
+  const nodeSprings: IndexedNodalSpringSupport[] = (model.nodeSprings ?? []).map((spring) => {
+    if (nodeSpringIds.has(spring.id)) {
+      throw new Error(`節点バネ ID "${spring.id}" が重複しています。`);
     }
-  }
+    nodeSpringIds.add(spring.id);
+    const nodeIndex = nodeIdToIndex.get(spring.nodeId);
+    if (nodeIndex === undefined) {
+      throw new Error(`節点バネ ${spring.id} の節点 ${spring.nodeId} が見つかりません。`);
+    }
+    return { ...spring, nodeIndex };
+  });
+
+  const gravity = model.gravity ?? { x: 0, y: 0, z: 0 };
 
   return {
     nodes,
     members,
     nodalLoads: model.nodalLoads,
     memberLoads: model.memberLoads,
+    nodeSprings,
+    gravity: { ...gravity },
     nodeCount,
     dofCount,
     nodeIdToIndex,
