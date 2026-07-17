@@ -8,8 +8,8 @@ import type { IndexedMember, EndRelease } from '../model/types';
  * Components:
  *   - Axial (DOF 0,6): EA/L
  *   - Torsion (DOF 3,9): GIx/L
- *   - Bending in XY plane (DOF 1,5,7,11): EIz with phi_z = 12EIz/(G*Asz*L^2)
- *   - Bending in XZ plane (DOF 2,4,8,10): EIy with phi_y = 12EIy/(G*Asy*L^2)
+ *   - Bending in XY plane (DOF 1,5,7,11): EIz with phi_z = 12EIz/(G*(kz*A)*L^2)
+ *   - Bending in XZ plane (DOF 2,4,8,10): EIy with phi_y = 12EIy/(G*(ky*A)*L^2)
  */
 export function buildLocalStiffness(member: IndexedMember): Float64Array {
   const { E, G, A, Ix, Iy, Iz, L } = member;
@@ -116,23 +116,27 @@ export function buildLocalStiffness(member: IndexedMember): Float64Array {
 }
 
 /**
- * Compute shear deformation parameter for Y-bending: phi_y = 12EIy/(G*Asy*L^2)
+ * Compute the shear deformation parameter for bending about local y.
+ * In this model `ky*A` is the effective area for the accompanying local-z
+ * shear force (the web direction of a conventionally oriented H section).
  */
 export function computePhiY(member: IndexedMember): number {
   const { E, Iy, G, ky, A, L } = member;
-  const Asy = ky * A;
-  if (G <= 0 || Asy <= 0) return 0;
-  return (12 * E * Iy) / (G * Asy * L * L);
+  const shearAreaForBendingY = ky * A;
+  if (G <= 0 || shearAreaForBendingY <= 0) return 0;
+  return (12 * E * Iy) / (G * shearAreaForBendingY * L * L);
 }
 
 /**
- * Compute shear deformation parameter for Z-bending: phi_z = 12EIz/(G*Asz*L^2)
+ * Compute the shear deformation parameter for bending about local z.
+ * In this model `kz*A` is the effective area for the accompanying local-y
+ * shear force (the flange direction of a conventionally oriented H section).
  */
 export function computePhiZ(member: IndexedMember): number {
   const { E, Iz, G, kz, A, L } = member;
-  const Asz = kz * A;
-  if (G <= 0 || Asz <= 0) return 0;
-  return (12 * E * Iz) / (G * Asz * L * L);
+  const shearAreaForBendingZ = kz * A;
+  if (G <= 0 || shearAreaForBendingZ <= 0) return 0;
+  return (12 * E * Iz) / (G * shearAreaForBendingZ * L * L);
 }
 
 /** Local DOF indices for the 6 end-release slots [ix, iy, iz, jx, jy, jz]. */

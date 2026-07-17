@@ -1,7 +1,7 @@
 import type { ProjectModel } from '../../core/model/types';
 import { getAnalysisMode, getEffectiveRestraint } from '../../core/model/analysisMode';
 import { getTorsionRestraintSourceDofs } from '../../core/model/torsionRestraint';
-import { resolveDofMap } from '../../core/model/couplings';
+import { findCouplingIssues, resolveDofMap } from '../../core/model/couplings';
 
 export type ReactionCell = {
   value: number | null;
@@ -17,13 +17,21 @@ export type ReactionRow = {
 export function buildEffectiveReactionRows(
   model: ProjectModel,
   reactions: number[]
-): { rows: ReactionRow[]; hasSharedReactions: boolean } {
+): { rows: ReactionRow[]; hasSharedReactions: boolean; hasInvalidCouplings: boolean } {
   const nodeIdToIndex = new Map(model.nodes.map((n, i) => [n.id, i]));
   const nodeCount = model.nodes.length;
   const dofCount = nodeCount * 6;
   const analysisMode = getAnalysisMode(model);
 
-  const dofMap = resolveDofMap(model, nodeIdToIndex);
+  // A stale result can briefly coexist with a model that is still being edited.
+  // Invalid coupling declarations must not make the results panel throw while
+  // rendering that state. Falling back to the identity map is conservative:
+  // reactions remain attached to their source nodes, but no invalid coupling is
+  // used to combine or reassign them.
+  const hasInvalidCouplings = findCouplingIssues(model).length > 0;
+  const dofMap = hasInvalidCouplings
+    ? Int32Array.from({ length: dofCount }, (_, dof) => dof)
+    : resolveDofMap(model, nodeIdToIndex);
 
   const constrainedSourceDofs = new Uint8Array(dofCount);
   for (let i = 0; i < model.nodes.length; i++) {
@@ -79,5 +87,5 @@ export function buildEffectiveReactionRows(
     if (hasAny) rows.push({ nodeId: model.nodes[i]!.id, cells });
   }
 
-  return { rows, hasSharedReactions };
+  return { rows, hasSharedReactions, hasInvalidCouplings };
 }

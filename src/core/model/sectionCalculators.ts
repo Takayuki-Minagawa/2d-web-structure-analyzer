@@ -54,9 +54,11 @@ function validateDimensions(dimensions: Record<string, number>): void {
 
 /**
  * Calculates an idealized doubly-symmetric H section (fillets are ignored).
- * The shear-area ratios use the web area for local-z shear and the flange area
- * for local-y shear. This is a transparent engineering approximation suitable
- * for elastic frame input; a manufacturer/table value may still be entered.
+ * The shear-area ratios follow the frame element's bending-axis convention:
+ * `ky` is used with `Iy` (local-z shear, carried mainly by the web), while
+ * `kz` is used with `Iz` (local-y shear, carried mainly by the flanges). This
+ * is a transparent engineering approximation suitable for elastic frame
+ * input; a manufacturer/table value may still be entered.
  */
 export function calculateHSection({ H, B, tw, tf }: HSectionDimensions): CalculatedSectionProperties {
   validateDimensions({ H, B, tw, tf });
@@ -83,8 +85,8 @@ export function calculateHSection({ H, B, tw, tf }: HSectionDimensions): Calcula
     Ix,
     Iy,
     Iz,
-    ky: flangeArea / A,
-    kz: webArea / A,
+    ky: webArea / A,
+    kz: flangeArea / A,
   };
 }
 
@@ -120,8 +122,11 @@ export function calculateRectangularHollowSection(
     Ix,
     Iy,
     Iz,
-    ky: midlineB / (midlineB + midlineH),
-    kz: midlineH / (midlineB + midlineH),
+    // ky accompanies Iy/local-z shear, so the walls parallel to local z
+    // (depth H) provide its leading thin-wall contribution; kz is analogous
+    // for local-y shear and the walls parallel to width B.
+    ky: midlineH / (midlineB + midlineH),
+    kz: midlineB / (midlineB + midlineH),
   };
 }
 

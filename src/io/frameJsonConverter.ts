@@ -73,7 +73,46 @@ function getLoadCaseInfo(
 
 function hasMemberLoadData(load: FrameJsonMemberLoad): boolean {
   return load.p1 !== 0 || load.p2 !== 0 || load.p3 !== 0 ||
-    load.scale !== 0 || load.unitLoad !== 0 || load.loadCode.trim() !== '';
+    load.scale !== 0 || load.unitLoad !== 0;
+}
+
+type MemberLoadValueResolution =
+  | { kind: 'value'; value: number; conflictsWithP1: boolean }
+  | { kind: 'zero' }
+  | { kind: 'ambiguous' };
+
+/**
+ * FrameModelMaker stores `scale`, `unitLoad`, `loadCode`, and `p1`
+ * independently and does not define a general precedence rule for external
+ * consumers. Keep the two encodings distinct instead of using a truthiness
+ * fallback that could revive a stale p1 value:
+ *
+ * - no parameterized fields: p1 is the direct value;
+ * - parameterized fields present: unitLoad * scale is the value;
+ * - an incomplete/zero parameterized value is ambiguous and is not imported.
+ */
+function resolveMemberLoadValue(load: FrameJsonMemberLoad): MemberLoadValueResolution {
+  const hasParameterizedFields = load.scale !== 0 ||
+    load.unitLoad !== 0 ||
+    load.loadCode.trim() !== '';
+
+  if (!hasParameterizedFields) {
+    return load.p1 === 0
+      ? { kind: 'zero' }
+      : { kind: 'value', value: load.p1, conflictsWithP1: false };
+  }
+
+  const parameterizedValue = load.unitLoad * load.scale;
+  if (parameterizedValue === 0) {
+    const hasUnresolvedMagnitude = load.p1 !== 0 || load.unitLoad !== 0 || load.scale !== 0;
+    return hasUnresolvedMagnitude ? { kind: 'ambiguous' } : { kind: 'zero' };
+  }
+
+  return {
+    kind: 'value',
+    value: parameterizedValue,
+    conflictsWithP1: load.p1 !== 0 && load.p1 !== parameterizedValue,
+  };
 }
 
 function pushAggregateWarning(
@@ -105,6 +144,8 @@ export function convertFrameJsonWithReport(
   const missingMaterialIds: number[] = [];
   const unsupportedLoadTypeIds: string[] = [];
   const unsupportedLoadDirectionIds: string[] = [];
+  const ambiguousMemberLoadValueIds: string[] = [];
+  const conflictingMemberLoadValueIds: string[] = [];
 
   const rawCaseIndex = loadCaseIndex ?? doc.loadCaseIndex;
   const provisionalCases = getLoadCaseInfo(doc, -1);
@@ -320,8 +361,17 @@ export function convertFrameJsonWithReport(
       continue;
     }
 
-    const loadValue = sourceLoad.unitLoad * sourceLoad.scale || sourceLoad.p1;
-    if (loadValue === 0) continue;
+    const loadReference = `${sourceMember.number}@${caseIdx + 1}`;
+    const valueResolution = resolveMemberLoadValue(sourceLoad);
+    if (valueResolution.kind === 'ambiguous') {
+      ambiguousMemberLoadValueIds.push(loadReference);
+      continue;
+    }
+    if (valueResolution.kind === 'zero') continue;
+    if (valueResolution.conflictsWithP1) {
+      conflictingMemberLoadValueIds.push(loadReference);
+    }
+    const loadValue = valueResolution.value;
     if (sourceLoad.type === 0) {
       memberLoads.push({
         id: `ml${nextSeq()}`,
@@ -391,6 +441,18 @@ export function convertFrameJsonWithReport(
     'unsupported-member-load-direction',
     `${unsupportedLoadDirectionIds.length} member load(s) with unsupported directions were skipped.`,
     unsupportedLoadDirectionIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'ambiguous-member-load-value',
+    `${ambiguousMemberLoadValueIds.length} member load(s) had parameterized fields but a zero unitLoad × scale; they were skipped instead of falling back to p1.`,
+    ambiguousMemberLoadValueIds
+  );
+  pushAggregateWarning(
+    warnings,
+    'conflicting-member-load-value',
+    `${conflictingMemberLoadValueIds.length} member load(s) specified both unitLoad × scale and a different p1; the parameterized value was imported and p1 was ignored.`,
+    conflictingMemberLoadValueIds
   );
 
   if (doc.walls.length > 0) {

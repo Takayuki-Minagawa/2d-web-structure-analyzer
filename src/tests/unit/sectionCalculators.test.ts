@@ -5,6 +5,34 @@ import {
   calculateRectangleSection,
   calculateRectangularHollowSection,
 } from '../../core/model/sectionCalculators';
+import { computePhiY, computePhiZ } from '../../core/analysis/element3dFrame';
+import type { IndexedMember } from '../../core/model/types';
+
+const RIGID_RELEASE = { type: 'rigid', kTheta: 0 } as const;
+
+function memberWithSection(
+  section: ReturnType<typeof calculateHSection>,
+): IndexedMember {
+  return {
+    index: 0,
+    id: 'm1',
+    ni: 0,
+    nj: 1,
+    E: 200,
+    G: 80,
+    ...section,
+    L: 20,
+    lambda: new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+    releases: [
+      RIGID_RELEASE,
+      RIGID_RELEASE,
+      RIGID_RELEASE,
+      RIGID_RELEASE,
+      RIGID_RELEASE,
+      RIGID_RELEASE,
+    ],
+  };
+}
 
 describe('section calculators', () => {
   it('calculates an ideal H section about the model local axes', () => {
@@ -14,8 +42,20 @@ describe('section calculators', () => {
     expect(result.Ix).toBeCloseTo(11 / 3, 12);
     expect(result.Iy).toBeCloseTo(224.6666666667, 10);
     expect(result.Iz).toBeCloseTo(20.9166666667, 10);
-    expect(result.ky).toBeCloseTo(10 / 14, 12);
-    expect(result.kz).toBeCloseTo(4 / 14, 12);
+    // The web carries local-z shear paired with Iy/phiY; the two flanges
+    // carry local-y shear paired with Iz/phiZ.
+    expect(result.ky).toBeCloseTo(4 / 14, 12);
+    expect(result.kz).toBeCloseTo(10 / 14, 12);
+
+    const member = memberWithSection(result);
+    expect(computePhiY(member)).toBeCloseTo(
+      12 * member.E * result.Iy / (member.G * 4 * member.L ** 2),
+      12,
+    );
+    expect(computePhiZ(member)).toBeCloseTo(
+      12 * member.E * result.Iz / (member.G * 10 * member.L ** 2),
+      12,
+    );
   });
 
   it('calculates a rectangular hollow section including its closed-section J', () => {
@@ -25,8 +65,10 @@ describe('section calculators', () => {
     expect(result.Ix).toBeCloseTo(496.125, 12);
     expect(result.Iy).toBeCloseTo(410.6666666667, 10);
     expect(result.Iz).toBeCloseTo(282.6666666667, 10);
-    expect(result.ky).toBeCloseTo(7 / 16, 12);
-    expect(result.kz).toBeCloseTo(9 / 16, 12);
+    // Vertical walls (midline depth 9) lead local-z shear; horizontal walls
+    // (midline width 7) lead local-y shear.
+    expect(result.ky).toBeCloseTo(9 / 16, 12);
+    expect(result.kz).toBeCloseTo(7 / 16, 12);
   });
 
   it('calculates a circular hollow section with J equal to its polar moment', () => {

@@ -93,6 +93,10 @@ export function pickMember(
   return best;
 }
 
-export function hasOpenModalDialog(): boolean {
-  return document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
+interface QueryRoot {
+  querySelector(selector: string): Element | null;
+}
+
+export function hasOpenModalDialog(root: QueryRoot = document): boolean {
+  return root.querySelector('[role="dialog"][aria-modal="true"]') !== null;
 }

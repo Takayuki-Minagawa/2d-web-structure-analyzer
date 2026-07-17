@@ -112,6 +112,59 @@ describe('FrameJson import reliability', () => {
     expect(result.model.activeLoadCaseId).toBe('lc-frame-1');
   });
 
+  it('keeps direct and parameterized member-load values distinct', () => {
+    const raw = createFrameJson();
+    const members = raw.members as Array<Record<string, unknown>>;
+    const sourceMember = members[0]!;
+    sourceMember.memberLoads = [
+      {
+        lengthMethod: 0, type: 0, direction: 2, scale: 0,
+        loadCode: '', unitLoad: 0, p1: -4, p2: 0, p3: 0,
+      },
+      {
+        lengthMethod: 0, type: 0, direction: 2, scale: 3,
+        loadCode: 'W', unitLoad: -2, p1: -99, p2: 0, p3: 0,
+      },
+    ];
+    raw.loadCaseCount = 2;
+
+    const direct = convertFrameJsonWithReport(parseFrameJson(raw), 0);
+    const parameterized = convertFrameJsonWithReport(parseFrameJson(raw), 1);
+
+    expect(direct.model.memberLoads).toEqual([
+      expect.objectContaining({ type: 'udl', direction: 'localZ', value: -4 }),
+    ]);
+    expect(parameterized.model.memberLoads).toEqual([
+      expect.objectContaining({ type: 'udl', direction: 'localZ', value: -6 }),
+    ]);
+    expect(parameterized.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'conflicting-member-load-value', itemIds: ['1@2'] }),
+    ]));
+  });
+
+  it.each([
+    { name: 'unit load with a zero scale', loadCode: 'W', unitLoad: -2, scale: 0 },
+    { name: 'load code without numeric factors', loadCode: 'W', unitLoad: 0, scale: 0 },
+  ])('does not revive stale p1 for $name', ({ loadCode, unitLoad, scale }) => {
+    const raw = createFrameJson();
+    const members = raw.members as Array<Record<string, unknown>>;
+    members[0]!.memberLoads = [{
+      lengthMethod: 0, type: 0, direction: 2, scale,
+      loadCode, unitLoad, p1: -99, p2: 0, p3: 0,
+    }];
+
+    const result = convertFrameJsonWithReport(parseFrameJson(raw));
+
+    expect(result.model.memberLoads).toEqual([]);
+    expect(result.warnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'ambiguous-member-load-value',
+        count: 1,
+        itemIds: ['1@1'],
+      }),
+    ]));
+  });
+
   it('ships a sample that validates and completes an analysis', () => {
     const imported = importJsonTextAuto(sampleText);
     const analysisModel = resolveAnalysisLoadModel(imported.model);

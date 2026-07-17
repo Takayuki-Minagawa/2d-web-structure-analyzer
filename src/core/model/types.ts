@@ -48,8 +48,8 @@ export interface Section {
   Ix: number;  // Torsional moment of inertia
   Iy: number;  // Second moment of area about local Y
   Iz: number;  // Second moment of area about local Z
-  ky: number;  // Shear area ratio (Asy = ky * A)
-  kz: number;  // Shear area ratio (Asz = kz * A)
+  ky: number;  // Effective shear-area ratio paired with Iy (local-z shear)
+  kz: number;  // Effective shear-area ratio paired with Iz (local-y shear)
 }
 
 export interface Spring {
@@ -272,8 +272,8 @@ export interface IndexedMember {
   Ix: number; // Torsional moment of inertia
   Iy: number; // Second moment about local Y
   Iz: number; // Second moment about local Z
-  ky: number; // Shear area ratio Y
-  kz: number; // Shear area ratio Z
+  ky: number; // Effective shear-area ratio paired with Iy (local-z shear)
+  kz: number; // Effective shear-area ratio paired with Iz (local-y shear)
   expansion?: number; // Thermal expansion coefficient; zero for legacy/manual indexed members
   density?: number; // Mass density; zero when omitted from the source material
   L: number;  // length

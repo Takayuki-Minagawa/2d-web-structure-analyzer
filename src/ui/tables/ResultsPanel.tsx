@@ -352,7 +352,7 @@ const ReactionTable: React.FC<{
   result: AnalysisResult;
 }> = ({ model, result }) => {
   const t = useT();
-  const { rows, hasSharedReactions } = useEffectiveReactions(model, result.reactions);
+  const { rows, hasSharedReactions, hasInvalidCouplings } = useEffectiveReactions(model, result.reactions);
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
 
   return (
@@ -378,6 +378,9 @@ const ReactionTable: React.FC<{
           ))}
         </tbody>
       </table>
+      {hasInvalidCouplings && (
+        <div className="warning-text">{t('results.invalidCouplingReactionFallback')}</div>
+      )}
       {hasSharedReactions && (
         <div className="warning-text">{t('results.coupledReactionNote')}</div>
       )}
