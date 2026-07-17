@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { ThreeApp } from '../../rendering/threeApp';
 import type { EditAction } from '../../rendering/threeApp';
 import { useProjectStore } from '../../state/projectStore';
@@ -8,13 +8,21 @@ import {
   getAnalysisMode,
   getDefaultMemberLoadDirectionForMode,
 } from '../../core/model/analysisMode';
+import { useT } from '../../i18n';
 
 const FIXED_RESTRAINT = { ux: true, uy: true, uz: true, rx: true, ry: true, rz: true };
+const PINNED_RESTRAINT = { ux: true, uy: true, uz: true, rx: false, ry: false, rz: false };
 const FREE_RESTRAINT = { ux: false, uy: false, uz: false, rx: false, ry: false, rz: false };
 
+interface CaptureRequestDetail {
+  resolve: (dataUrl: string) => void;
+}
+
 export const CanvasPanel: React.FC = () => {
+  const t = useT();
   const containerRef = useRef<HTMLDivElement>(null);
   const appRef = useRef<ThreeApp | null>(null);
+  const [nodeCoordinates, setNodeCoordinates] = useState({ x: '0', y: '0', z: '0' });
 
   const model = useProjectStore((s) => s.model);
   const analysisResult = useProjectStore((s) => s.analysisResult);
@@ -39,12 +47,30 @@ export const CanvasPanel: React.FC = () => {
   const gridSize = useViewStore((s) => s.gridSize);
   const deformationScale = useViewStore((s) => s.deformationScale);
   const diagramScale = useViewStore((s) => s.diagramScale);
+  const labelMode = useViewStore((s) => s.labelMode);
+  const workPlaneAxis = useViewStore((s) => s.workPlaneAxis);
+  const workPlaneOffset = useViewStore((s) => s.workPlaneOffset);
+  const setDisplayMode = useViewStore((s) => s.setDisplayMode);
+  const setShowNodeLabels = useViewStore((s) => s.setShowNodeLabels);
+  const setShowMemberLabels = useViewStore((s) => s.setShowMemberLabels);
+  const setShowLoads = useViewStore((s) => s.setShowLoads);
+  const setShowSupports = useViewStore((s) => s.setShowSupports);
+  const setLabelMode = useViewStore((s) => s.setLabelMode);
+  const setGridSnap = useViewStore((s) => s.setGridSnap);
+  const setGridSize = useViewStore((s) => s.setGridSize);
+  const setAnimateDeformation = useViewStore((s) => s.setAnimateDeformation);
+  const setDeformationScale = useViewStore((s) => s.setDeformationScale);
+  const setDiagramScale = useViewStore((s) => s.setDiagramScale);
+  const setWorkPlaneAxis = useViewStore((s) => s.setWorkPlaneAxis);
+  const setWorkPlaneOffset = useViewStore((s) => s.setWorkPlaneOffset);
 
   const selectedNodeIds = useSelectionStore((s) => s.selectedNodeIds);
   const selectedMemberIds = useSelectionStore((s) => s.selectedMemberIds);
   const selectNode = useSelectionStore((s) => s.selectNode);
   const selectMember = useSelectionStore((s) => s.selectMember);
   const clearSelection = useSelectionStore((s) => s.clearSelection);
+  const focusVersion = useSelectionStore((s) => s.focusVersion);
+  const requestFocusSelection = useSelectionStore((s) => s.focusSelection);
 
   const handleEditAction = useCallback((action: EditAction) => {
     switch (action.kind) {
@@ -61,8 +87,12 @@ export const CanvasPanel: React.FC = () => {
       case 'setSupport': {
         const node = useProjectStore.getState().model.nodes.find(n => n.id === action.nodeId);
         if (!node) break;
-        const isFixed = node.restraint.ux && node.restraint.uy && node.restraint.uz;
-        updateNode(action.nodeId, { restraint: isFixed ? FREE_RESTRAINT : FIXED_RESTRAINT });
+        const isFree = !node.restraint.ux && !node.restraint.uy && !node.restraint.uz
+          && !node.restraint.rx && !node.restraint.ry && !node.restraint.rz;
+        const isPinned = node.restraint.ux && node.restraint.uy && node.restraint.uz
+          && !node.restraint.rx && !node.restraint.ry && !node.restraint.rz;
+        const restraint = isFree ? PINNED_RESTRAINT : isPinned ? FIXED_RESTRAINT : FREE_RESTRAINT;
+        updateNode(action.nodeId, { restraint });
         selectNode(action.nodeId);
         break;
       }
@@ -98,6 +128,16 @@ export const CanvasPanel: React.FC = () => {
     }
   }, [addNode, addMember, updateNode, removeNode, removeMember, addNodalLoad, addMemberLoad, selectNode, selectMember, clearSelection]);
 
+  const addNodeFromCoordinates = useCallback((event: React.FormEvent) => {
+    event.preventDefault();
+    const x = Number(nodeCoordinates.x);
+    const y = Number(nodeCoordinates.y);
+    const z = Number(nodeCoordinates.z);
+    if (![x, y, z].every(Number.isFinite)) return;
+    const id = addNode(x, y, z);
+    selectNode(id);
+  }, [addNode, nodeCoordinates, selectNode]);
+
   // Initialize Three.js app
   useEffect(() => {
     const container = containerRef.current;
@@ -125,6 +165,14 @@ export const CanvasPanel: React.FC = () => {
   useEffect(() => {
     appRef.current?.setEditTool(editTool);
   }, [editTool]);
+
+  useEffect(() => {
+    setNodeCoordinates((current) => {
+      if (workPlaneAxis === 'xy') return { ...current, z: String(workPlaneOffset) };
+      if (workPlaneAxis === 'xz') return { ...current, y: String(workPlaneOffset) };
+      return { ...current, x: String(workPlaneOffset) };
+    });
+  }, [workPlaneAxis, workPlaneOffset]);
 
   // Keep edit action callback in sync
   useEffect(() => {
@@ -184,6 +232,10 @@ export const CanvasPanel: React.FC = () => {
   }, [showMemberLabels]);
 
   useEffect(() => {
+    appRef.current?.setLabelMode(labelMode);
+  }, [labelMode]);
+
+  useEffect(() => {
     appRef.current?.setShowLoads(showLoads);
   }, [showLoads]);
 
@@ -203,11 +255,130 @@ export const CanvasPanel: React.FC = () => {
     appRef.current?.setGridSize(gridSize);
   }, [gridSize]);
 
+  useEffect(() => {
+    appRef.current?.setWorkPlane(workPlaneAxis, workPlaneOffset);
+  }, [workPlaneAxis, workPlaneOffset]);
+
+  const previousFocusVersion = useRef(focusVersion);
+  useEffect(() => {
+    if (focusVersion === previousFocusVersion.current) return;
+    previousFocusVersion.current = focusVersion;
+    appRef.current?.focusSelection();
+  }, [focusVersion]);
+
+  useEffect(() => {
+    const handleScreenshot = () => appRef.current?.downloadPng();
+    const handleCaptureRequest = (event: Event) => {
+      const detail = (event as CustomEvent<CaptureRequestDetail>).detail;
+      const app = appRef.current;
+      if (app && typeof detail?.resolve === 'function') detail.resolve(app.capturePngDataUrl());
+    };
+    window.addEventListener('frame-viewer:screenshot', handleScreenshot);
+    window.addEventListener('frame-viewer:capture-request', handleCaptureRequest);
+    return () => {
+      window.removeEventListener('frame-viewer:screenshot', handleScreenshot);
+      window.removeEventListener('frame-viewer:capture-request', handleCaptureRequest);
+    };
+  }, []);
+
   return (
-    <div
-      ref={containerRef}
-      className="main-canvas"
-      style={{ position: 'relative', width: '100%', height: '100%' }}
-    />
+    <div className="canvas-stage">
+      <div ref={containerRef} className="main-canvas" />
+
+      {editTool === 'addNode' && (
+        <form className="canvas-coordinate-form" onSubmit={addNodeFromCoordinates} aria-label={t('canvas.addNodeAria')}>
+          <strong>{t('canvas.addNode')}</strong>
+          {(['x', 'y', 'z'] as const).map((axis) => (
+            <label key={axis}>
+              {axis.toUpperCase()}
+              <input
+                type="number"
+                step="any"
+                value={nodeCoordinates[axis]}
+                onChange={(event) => setNodeCoordinates((current) => ({ ...current, [axis]: event.target.value }))}
+              />
+            </label>
+          ))}
+          <button type="submit">{t('canvas.add')}</button>
+        </form>
+      )}
+
+      <details className="canvas-palette" open>
+        <summary>{t('canvas.palette')}</summary>
+        <div className="canvas-palette-content">
+          <label>
+            {t('canvas.display')}
+            <select value={displayMode} onChange={(event) => setDisplayMode(event.target.value as typeof displayMode)}>
+              <option value="model">{t('display.model')}</option>
+              <option value="deformation">{t('display.deformation')}</option>
+              {(['N', 'Vy', 'Vz', 'Mx', 'My', 'Mz'] as const).map((mode) => <option key={mode} value={mode}>{mode}</option>)}
+            </select>
+          </label>
+          <div className="canvas-palette-checks">
+            <label><input type="checkbox" checked={showNodeLabels} onChange={(event) => setShowNodeLabels(event.target.checked)} />{t('prop.nodeLabels')}</label>
+            <label><input type="checkbox" checked={showMemberLabels} onChange={(event) => setShowMemberLabels(event.target.checked)} />{t('prop.memberLabels')}</label>
+            <label><input type="checkbox" checked={showLoads} onChange={(event) => setShowLoads(event.target.checked)} />{t('prop.showLoads')}</label>
+            <label><input type="checkbox" checked={showSupports} onChange={(event) => setShowSupports(event.target.checked)} />{t('prop.supports')}</label>
+          </div>
+          <label>
+            {t('canvas.labelMode')}
+            <select value={labelMode} onChange={(event) => setLabelMode(event.target.value as typeof labelMode)}>
+              <option value="auto">{t('canvas.labelAuto')}</option>
+              <option value="all">{t('canvas.labelAll')}</option>
+              <option value="selected">{t('canvas.labelSelected')}</option>
+            </select>
+          </label>
+          {displayMode === 'deformation' && (
+            <>
+              <label className="canvas-palette-toggle">
+                <span>{t('canvas.animateDeformation')}</span>
+                <input type="checkbox" checked={animateDeformation} onChange={(event) => setAnimateDeformation(event.target.checked)} />
+              </label>
+              <label>
+                {t('prop.deformScale')}
+                <input type="number" min="0" step="1" value={deformationScale} onChange={(event) => {
+                  const value = event.target.valueAsNumber;
+                  if (Number.isFinite(value)) setDeformationScale(Math.max(0, value));
+                }} />
+              </label>
+            </>
+          )}
+          {displayMode !== 'model' && displayMode !== 'deformation' && (
+            <label>
+              {t('prop.diagramScale')}
+              <input type="number" min="0" step="0.1" value={diagramScale} onChange={(event) => {
+                const value = event.target.valueAsNumber;
+                if (Number.isFinite(value)) setDiagramScale(Math.max(0, value));
+              }} />
+            </label>
+          )}
+          <div className="canvas-palette-row">
+            <label>
+              {t('canvas.workPlane')}
+              <select value={workPlaneAxis} onChange={(event) => setWorkPlaneAxis(event.target.value as typeof workPlaneAxis)}>
+                <option value="xy">XY</option>
+                <option value="xz">XZ</option>
+                <option value="yz">YZ</option>
+              </select>
+            </label>
+            <label>
+              {t('canvas.offset')}
+              <input type="number" step="any" value={workPlaneOffset} onChange={(event) => setWorkPlaneOffset(event.target.valueAsNumber)} />
+            </label>
+          </div>
+          <div className="canvas-palette-row">
+            <label><input type="checkbox" checked={gridSnap} onChange={(event) => setGridSnap(event.target.checked)} />{t('canvas.snap')}</label>
+            <label>
+              {t('canvas.spacing')}
+              <input type="number" min="0.001" step="any" value={gridSize} onChange={(event) => {
+                const value = event.target.valueAsNumber;
+                if (Number.isFinite(value)) setGridSize(value);
+              }} />
+            </label>
+          </div>
+          <button type="button" onClick={requestFocusSelection} disabled={selectedNodeIds.size + selectedMemberIds.size === 0}>{t('canvas.focusSelection')}</button>
+        </div>
+      </details>
+    </div>
   );
 };

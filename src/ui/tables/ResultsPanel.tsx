@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useProjectStore } from '../../state/projectStore';
+import type { AnalysisResultView } from '../../state/projectStore';
 import { useT } from '../../i18n';
 import type { TKey } from '../../i18n';
 import type {
@@ -11,6 +12,10 @@ import type {
   StabilityDiagnostic,
 } from '../../core/model/types';
 import { buildEffectiveReactionRows } from './reactionRows';
+import { memberLabel, nodeLabel } from '../../core/model/displayNumbers';
+import { formatEngineering } from '../../core/formatEngineering';
+import { useSelectionStore } from '../../state/selectionStore';
+import type { SerializedComponentEnvelope } from '../../worker/protocol';
 
 type TabId = 'displacements' | 'reactions' | 'endForces';
 type Translate = (key: TKey) => string;
@@ -34,10 +39,40 @@ export const ResultsPanel: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('displacements');
   const model = useProjectStore((s) => s.model);
   const result = useProjectStore((s) => s.analysisResult);
+  const analysisResults = useProjectStore((s) => s.analysisResults);
+  const analysisEnvelope = useProjectStore((s) => s.analysisEnvelope);
+  const analysisFactorizationCount = useProjectStore((s) => s.analysisFactorizationCount);
+  const analysisResultView = useProjectStore((s) => s.analysisResultView);
+  const selectAnalysisResultView = useProjectStore((s) => s.selectAnalysisResultView);
   const error = useProjectStore((s) => s.analysisError);
   const isAnalyzing = useProjectStore((s) => s.isAnalyzing);
   const isResultStale = useProjectStore((s) => s.isResultStale);
   const t = useT();
+  const targetNames = useMemo(
+    () => new Map(analysisResults.map((item) => [item.target.id, item.target.name])),
+    [analysisResults],
+  );
+  const envelopeBound = analysisResultView?.kind === 'envelope'
+    ? analysisResultView.bound
+    : null;
+  const resultViewValue = analysisResultView?.kind === 'target'
+    ? `target:${analysisResultView.targetId}`
+    : analysisResultView?.kind === 'envelope'
+      ? `envelope:${analysisResultView.bound}`
+      : '';
+
+  const changeResultView = (value: string) => {
+    const targetId = value.startsWith('target:') ? value.slice('target:'.length) : '';
+    const envelopeBoundValue = value.startsWith('envelope:')
+      ? value.slice('envelope:'.length)
+      : '';
+    const view: AnalysisResultView | null = targetId
+      ? { kind: 'target', targetId }
+      : envelopeBoundValue === 'min' || envelopeBoundValue === 'max'
+        ? { kind: 'envelope', bound: envelopeBoundValue }
+        : null;
+    if (view) selectAnalysisResultView(view);
+  };
 
   if (isAnalyzing) {
     return <div className="results-panel"><p>{t('results.analyzing')}</p></div>;
@@ -46,7 +81,7 @@ export const ResultsPanel: React.FC = () => {
   if (error) {
     return (
       <div className="results-panel">
-        <AnalysisErrorDetails error={error} />
+        <AnalysisErrorDetails error={error} model={model} />
       </div>
     );
   }
@@ -55,9 +90,26 @@ export const ResultsPanel: React.FC = () => {
     return <div className="results-panel"><p className="muted">{t('results.noResults')}</p></div>;
   }
 
+  if (isResultStale) {
+    return <div className="results-panel"><p className="warning-text">{t('results.stale')}</p><p className="muted">{t('results.staleHidden')}</p></div>;
+  }
+
   return (
     <div className="results-panel">
-      {isResultStale && <div className="warning-text">{t('results.stale')}</div>}
+      {analysisResults.length > 0 && (
+        <div className="result-view-controls">
+          <label>
+            {t('results.resultView')}
+            <select value={resultViewValue} onChange={(event) => changeResultView(event.target.value)}>
+              <optgroup label={t('results.casesCombinations')}>
+                {analysisResults.map((item) => <option key={`${item.target.type}:${item.target.id}`} value={`target:${item.target.id}`}>{item.target.type === 'loadCase' ? t('results.casePrefix') : t('results.combinationPrefix')}: {item.target.name}</option>)}
+              </optgroup>
+              {analysisEnvelope && <optgroup label={t('results.envelope')}><option value="envelope:min">{t('results.minimum')}</option><option value="envelope:max">{t('results.maximum')}</option></optgroup>}
+            </select>
+          </label>
+          {analysisFactorizationCount !== null && <span className="result-factorization">{t('results.factorizationCount').replace('{count}', String(analysisFactorizationCount))}</span>}
+        </div>
+      )}
       <div className="tab-bar">
         <button className={activeTab === 'displacements' ? 'active' : ''} onClick={() => setActiveTab('displacements')}>{t('results.displacements')}</button>
         <button className={activeTab === 'reactions' ? 'active' : ''} onClick={() => setActiveTab('reactions')}>{t('results.reactions')}</button>
@@ -73,13 +125,10 @@ export const ResultsPanel: React.FC = () => {
             <tbody>
               {model.nodes.map((n, i) => (
                 <tr key={n.id}>
-                  <td>{n.id.substring(0, 5)}</td>
-                  <td>{fmt(result.displacements[i * 6])}</td>
-                  <td>{fmt(result.displacements[i * 6 + 1])}</td>
-                  <td>{fmt(result.displacements[i * 6 + 2])}</td>
-                  <td>{fmt(result.displacements[i * 6 + 3])}</td>
-                  <td>{fmt(result.displacements[i * 6 + 4])}</td>
-                  <td>{fmt(result.displacements[i * 6 + 5])}</td>
+                  <td>{nodeLabel(n)}</td>
+                  {Array.from({ length: 6 }, (_, component) => envelopeBound && analysisEnvelope
+                    ? <EnvelopeValueCell key={component} envelope={analysisEnvelope.displacements} index={i * 6 + component} bound={envelopeBound} targetNames={targetNames} governingTemplate={t('results.governing')} />
+                    : <td key={component}>{fmt(result.displacements[i * 6 + component])}</td>)}
                 </tr>
               ))}
             </tbody>
@@ -88,7 +137,9 @@ export const ResultsPanel: React.FC = () => {
       )}
 
       {activeTab === 'reactions' && (
-        <ReactionTable model={model} result={result} />
+        envelopeBound && analysisEnvelope
+          ? <EnvelopeNodeTable model={model} envelope={analysisEnvelope.reactions} bound={envelopeBound} targetNames={targetNames} labels={['Rx', 'Ry', 'Rz', 'Mx', 'My', 'Mz']} governingTemplate={t('results.governing')} />
+          : <ReactionTable model={model} result={result} />
       )}
 
       {activeTab === 'endForces' && (
@@ -104,12 +155,15 @@ export const ResultsPanel: React.FC = () => {
             <tbody>
               {model.members.map((m) => {
                 const ef = result.elementEndForces[m.id];
-                if (!ef) return null;
+                const envelope = analysisEnvelope?.elementEndForces[m.id];
+                if (envelopeBound ? !envelope : !ef) return null;
                 return (
                   <tr key={m.id}>
-                    <td>{m.id.substring(0, 5)}</td>
+                    <td>{memberLabel(m)}</td>
                     {Array.from({ length: 12 }, (_, k) => (
-                      <td key={k}>{fmt(ef[k])}</td>
+                      envelopeBound && envelope
+                        ? <EnvelopeValueCell key={k} envelope={envelope} index={k} bound={envelopeBound} targetNames={targetNames} governingTemplate={t('results.governing')} />
+                        : <td key={k}>{fmt(ef?.[k])}</td>
                     ))}
                   </tr>
                 );
@@ -119,7 +173,7 @@ export const ResultsPanel: React.FC = () => {
         </div>
       )}
 
-      {result.warnings.length > 0 && (
+      {!envelopeBound && result.warnings.length > 0 && (
         <div className="warnings">
           {result.warnings.map((w, i) => (
             <div key={i} className="warning-text">{w}</div>
@@ -130,18 +184,31 @@ export const ResultsPanel: React.FC = () => {
   );
 };
 
-const AnalysisErrorDetails: React.FC<{ error: AnalysisError }> = ({ error }) => {
+const AnalysisErrorDetails: React.FC<{ error: AnalysisError; model: ProjectModel }> = ({ error, model }) => {
   const t = useT();
+  const selectNode = useSelectionStore((state) => state.selectNode);
+  const selectMember = useSelectionStore((state) => state.selectMember);
+  const focusSelection = useSelectionStore((state) => state.focusSelection);
   const diagnostics = error.diagnostics ?? [];
+  const hasNodeTarget = Boolean(error.nodeId && model.nodes.some((node) => node.id === error.nodeId));
+  const hasMemberTarget = Boolean(error.elementId && model.members.some((member) => member.id === error.elementId));
+  const goToError = () => {
+    if (hasNodeTarget && error.nodeId) selectNode(error.nodeId);
+    else if (hasMemberTarget && error.elementId) selectMember(error.elementId);
+    else return;
+    focusSelection();
+  };
 
   return (
     <div className="analysis-error">
-      <div className="error-text">{formatAnalysisErrorMessage(error, t)}</div>
+      {hasNodeTarget || hasMemberTarget
+        ? <button className="error-link error-text" onClick={goToError}>{formatAnalysisErrorMessage(error, t)}</button>
+        : <div className="error-text">{formatAnalysisErrorMessage(error, t)}</div>}
       {diagnostics.length > 0 && (
         <div className="diagnostics-list">
           <div className="diagnostics-title">{t('results.diagnostics')}</div>
           {diagnostics.map((diagnostic, index) => (
-            <DiagnosticItem key={`${diagnostic.kind}-${index}`} diagnostic={diagnostic} />
+            <DiagnosticItem key={`${diagnostic.kind}-${index}`} diagnostic={diagnostic} model={model} />
           ))}
         </div>
       )}
@@ -149,24 +216,29 @@ const AnalysisErrorDetails: React.FC<{ error: AnalysisError }> = ({ error }) => 
   );
 };
 
-const DiagnosticItem: React.FC<{ diagnostic: StabilityDiagnostic }> = ({ diagnostic }) => {
+const DiagnosticItem: React.FC<{ diagnostic: StabilityDiagnostic; model: ProjectModel }> = ({ diagnostic, model }) => {
   const t = useT();
-  const formatted = formatDiagnostic(diagnostic, t);
+  const selectNode = useSelectionStore((state) => state.selectNode);
+  const selectMember = useSelectionStore((state) => state.selectMember);
+  const focusSelection = useSelectionStore((state) => state.focusSelection);
+  const displayNodeId = diagnostic.nodeId ? nodeLabel(model.nodes.find((node) => node.id === diagnostic.nodeId)) : undefined;
+  const displayMemberId = diagnostic.elementId ? memberLabel(model.members.find((member) => member.id === diagnostic.elementId)) : undefined;
+  const formatted = formatDiagnostic({ ...diagnostic, ...(displayNodeId ? { nodeId: displayNodeId } : {}), ...(displayMemberId ? { elementId: displayMemberId } : {}) }, t);
   const meta = [
-    diagnostic.nodeId ? `${t('results.node')} ${diagnostic.nodeId}` : null,
-    diagnostic.elementId ? `${t('results.member')} ${diagnostic.elementId}` : null,
+    displayNodeId ? `${t('results.node')} ${displayNodeId}` : null,
+    displayMemberId ? `${t('results.member')} ${displayMemberId}` : null,
     diagnostic.dof ? `DOF ${diagnostic.dof}` : null,
   ].filter((item): item is string => item !== null);
 
   return (
-    <div className="diagnostic-item">
+    <button className="diagnostic-item diagnostic-button" onClick={() => { if (diagnostic.nodeId) selectNode(diagnostic.nodeId); else if (diagnostic.elementId) selectMember(diagnostic.elementId); else return; focusSelection(); }}>
       <div>{formatted.message}</div>
       {meta.length > 0 && <div className="diagnostic-meta">{meta.join(' / ')}</div>}
       <div className="diagnostic-suggestion">
         <span>{t('results.diagnosticSuggestion')}</span>
         {formatted.suggestion}
       </div>
-    </div>
+    </button>
   );
 };
 
@@ -238,12 +310,50 @@ function useEffectiveReactions(model: ProjectModel, reactions: number[]) {
   );
 }
 
+const EnvelopeValueCell: React.FC<{
+  envelope: SerializedComponentEnvelope<number[]>;
+  index: number;
+  bound: 'min' | 'max';
+  targetNames: ReadonlyMap<string, string>;
+  governingTemplate: string;
+}> = ({ envelope, index, bound, targetNames, governingTemplate }) => {
+  const values = bound === 'min' ? envelope.min : envelope.max;
+  const targetIds = bound === 'min' ? envelope.minTargetIds : envelope.maxTargetIds;
+  const targetId = targetIds[index];
+  const targetName = targetId ? targetNames.get(targetId) ?? targetId : '';
+  return <td title={targetName ? governingTemplate.replace('{target}', targetName) : undefined}>
+    <span>{fmt(values[index])}</span>
+    {targetName && <small className="envelope-target">{targetName}</small>}
+  </td>;
+};
+
+const EnvelopeNodeTable: React.FC<{
+  model: ProjectModel;
+  envelope: SerializedComponentEnvelope<number[]>;
+  bound: 'min' | 'max';
+  targetNames: ReadonlyMap<string, string>;
+  labels: readonly string[];
+  governingTemplate: string;
+}> = ({ model, envelope, bound, targetNames, labels, governingTemplate }) => {
+  const t = useT();
+  return <div className="table-wrapper">
+    <table>
+      <thead><tr><th>{t('results.node')}</th>{labels.map((label) => <th key={label}>{label}</th>)}</tr></thead>
+      <tbody>{model.nodes.map((node, nodeIndex) => <tr key={node.id}>
+        <td>{nodeLabel(node)}</td>
+        {labels.map((label, component) => <EnvelopeValueCell key={label} envelope={envelope} index={nodeIndex * 6 + component} bound={bound} targetNames={targetNames} governingTemplate={governingTemplate} />)}
+      </tr>)}</tbody>
+    </table>
+  </div>;
+};
+
 const ReactionTable: React.FC<{
   model: ProjectModel;
   result: AnalysisResult;
 }> = ({ model, result }) => {
   const t = useT();
   const { rows, hasSharedReactions } = useEffectiveReactions(model, result.reactions);
+  const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
 
   return (
     <div className="table-wrapper">
@@ -254,7 +364,7 @@ const ReactionTable: React.FC<{
         <tbody>
           {rows.map((row) => (
             <tr key={row.nodeId}>
-              <td>{row.nodeId.substring(0, 5)}</td>
+              <td>{nodeLabel(nodeById.get(row.nodeId))}</td>
               {row.cells.map((cell, k) => (
                 <td key={k}>
                   {cell.value !== null
@@ -277,7 +387,5 @@ const ReactionTable: React.FC<{
 
 function fmt(v: number | undefined): string {
   if (v === undefined) return '-';
-  if (Math.abs(v) < 1e-10) return '0.000';
-  if (Math.abs(v) >= 1e4 || Math.abs(v) < 1e-3) return v.toExponential(3);
-  return v.toFixed(4);
+  return formatEngineering(v, { significantDigits: 5, zeroTolerance: 1e-10 });
 }

@@ -3,6 +3,7 @@ import { useViewStore } from '../../state/viewStore';
 import { useT } from '../../i18n';
 import type { EditTool, DisplayMode } from '../../state/viewStore';
 import type { TKey } from '../../i18n';
+import { redoProject, undoProject, useProjectHistory } from '../../state/projectStore';
 
 const tools: { id: EditTool; labelKey: TKey; icon: string }[] = [
   { id: 'select', labelKey: 'tool.select', icon: '\u2299' },
@@ -24,15 +25,34 @@ const displayModes: { id: DisplayMode; labelKey: TKey }[] = [
   { id: 'Mz', labelKey: 'display.Mz' },
 ];
 
-export const Toolbar: React.FC<{ onRunAnalysis: () => void }> = ({ onRunAnalysis }) => {
+interface ToolbarProps {
+  onRunAnalysis: () => void;
+  onCancelAnalysis: () => void;
+  isAnalyzing: boolean;
+  onOpenGenerator: () => void;
+  onOpenTables: () => void;
+}
+
+export const Toolbar: React.FC<ToolbarProps> = ({ onRunAnalysis, onCancelAnalysis, isAnalyzing, onOpenGenerator, onOpenTables }) => {
   const editTool = useViewStore((s) => s.editTool);
   const setEditTool = useViewStore((s) => s.setEditTool);
   const displayMode = useViewStore((s) => s.displayMode);
   const setDisplayMode = useViewStore((s) => s.setDisplayMode);
   const t = useT();
+  const canUndo = useProjectHistory((state) => state.pastStates.length > 0);
+  const canRedo = useProjectHistory((state) => state.futureStates.length > 0);
 
   return (
     <div className="toolbar">
+      <div className="toolbar-section">
+        <div className="toolbar-title">{t('toolbar.history')}</div>
+        <div className="toolbar-inline">
+          <button className="toolbar-btn" disabled={!canUndo} onClick={undoProject} title={t('toolbar.undoTitle')}><span className="toolbar-icon">↶</span><span className="toolbar-label">{t('toolbar.undo')}</span></button>
+          <button className="toolbar-btn" disabled={!canRedo} onClick={redoProject} title={t('toolbar.redoTitle')}><span className="toolbar-icon">↷</span><span className="toolbar-label">{t('toolbar.redo')}</span></button>
+        </div>
+        <button className="toolbar-btn" onClick={onOpenGenerator}><span className="toolbar-icon">▦</span><span className="toolbar-label">{t('toolbar.generator')}</span></button>
+        <button className="toolbar-btn" onClick={onOpenTables}><span className="toolbar-icon">▤</span><span className="toolbar-label">{t('toolbar.tables')}</span></button>
+      </div>
       <div className="toolbar-section">
         <div className="toolbar-title">{t('toolbar.edit')}</div>
         {tools.map((tool) => (
@@ -62,8 +82,8 @@ export const Toolbar: React.FC<{ onRunAnalysis: () => void }> = ({ onRunAnalysis
       </div>
 
       <div className="toolbar-section">
-        <button className="toolbar-btn run-btn" onClick={onRunAnalysis}>
-          {'\u25B6'} {t('toolbar.run')}
+        <button className={`toolbar-btn ${isAnalyzing ? 'cancel-btn' : 'run-btn'}`} onClick={isAnalyzing ? onCancelAnalysis : onRunAnalysis}>
+          {isAnalyzing ? `■ ${t('results.analyzing')}` : `\u25B6 ${t('toolbar.run')}`}
         </button>
       </div>
     </div>

@@ -19,6 +19,86 @@ describe('projectStore basic operations', () => {
     expect(model.sections[0]!.Iz).toBeGreaterThan(0);
   });
 
+  it('updates gravity and manages six-DOF nodal springs', () => {
+    const state = useProjectStore.getState();
+    const nodeId = state.addNode(0, 0, 0);
+    state.updateGravity({ z: -980.665 });
+    const springId = state.addNodeSpring({
+      nodeId,
+      ux: 10,
+      uy: 20,
+      uz: 30,
+      rx: 1,
+      ry: 2,
+      rz: 3,
+    });
+    state.updateNodeSpring(springId, { uy: 25, rz: 4 });
+
+    expect(useProjectStore.getState().model.gravity).toEqual({ x: 0, y: 0, z: -980.665 });
+    expect(useProjectStore.getState().model.nodeSprings?.[0]).toMatchObject({
+      id: springId,
+      nodeId,
+      ux: 10,
+      uy: 25,
+      rz: 4,
+    });
+
+    state.removeNode(nodeId);
+    expect(useProjectStore.getState().model.nodeSprings).toEqual([]);
+  });
+
+  it('stores global, temperature, and self-weight member loads', () => {
+    const state = useProjectStore.getState();
+    const nodeI = state.addNode(0, 0, 0);
+    const nodeJ = state.addNode(10, 0, 0);
+    const memberId = state.addMember(nodeI, nodeJ);
+    state.addMemberLoad({ memberId, type: 'udl', direction: 'globalZ', value: -2 });
+    state.addMemberLoad({ memberId, type: 'temperature', direction: 'localX', value: 25 });
+    state.addMemberLoad({ memberId, type: 'selfWeight', direction: 'globalZ', value: 1 });
+
+    expect(useProjectStore.getState().model.memberLoads.map((load) => load.type)).toEqual([
+      'udl',
+      'temperature',
+      'selfWeight',
+    ]);
+  });
+
+  it('keeps per-target results and leaves the canvas result unchanged for envelopes', () => {
+    const state = useProjectStore.getState();
+    state.addNode(0, 0, 0);
+    const firstTargetId = useProjectStore.getState().model.loadCases![0]!.id;
+    const secondTargetId = state.addLoadCase('Second');
+    const targetResult = (id: string, name: string, value: number) => ({
+      target: { id, name, type: 'loadCase' as const },
+      displacements: new Array(6).fill(value),
+      reactions: new Array(6).fill(value * 10),
+      elementEndForces: {},
+      diagrams: {},
+      warnings: [],
+    });
+    state.setAnalysisResult({
+      type: 'analyze-all-success',
+      results: [targetResult(firstTargetId, 'Default', 1), targetResult(secondTargetId, 'Second', 2)],
+      envelope: {
+        displacements: { min: new Array(6).fill(1), max: new Array(6).fill(2), minTargetIds: new Array(6).fill(firstTargetId), maxTargetIds: new Array(6).fill(secondTargetId) },
+        reactions: { min: new Array(6).fill(10), max: new Array(6).fill(20), minTargetIds: new Array(6).fill(firstTargetId), maxTargetIds: new Array(6).fill(secondTargetId) },
+        elementEndForces: {},
+      },
+      factorizationCount: 1,
+    });
+
+    expect(useProjectStore.getState().analysisResult?.displacements[0]).toBe(2);
+    expect(useProjectStore.getState().analysisResults).toHaveLength(2);
+    expect(useProjectStore.getState().analysisFactorizationCount).toBe(1);
+
+    state.selectAnalysisResultView({ kind: 'envelope', bound: 'min' });
+    expect(useProjectStore.getState().analysisResult?.displacements[0]).toBe(2);
+    expect(useProjectStore.getState().analysisResultView).toEqual({ kind: 'envelope', bound: 'min' });
+
+    state.selectAnalysisResultView({ kind: 'target', targetId: firstTargetId });
+    expect(useProjectStore.getState().analysisResult?.displacements[0]).toBe(1);
+  });
+
   it('assigns new loads to the active load case', () => {
     const state = useProjectStore.getState();
     const nodeId = state.addNode(0, 0, 0);

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildIndexedModel } from '../../core/model/indexing';
 import { validateModel } from '../../core/model/validation';
-import { analyzeFrame } from '../../core/analysis/analyzeFrame';
+import { AnalysisException, analyzeFrame } from '../../core/analysis/analyzeFrame';
 import { partitionDofs } from '../../core/analysis/constraints';
 import { resolveAnalysisLoadModel } from '../../core/model/loadCases';
 import type { AnalysisError, ProjectModel, Restraint } from '../../core/model/types';
@@ -268,6 +268,21 @@ describe('2D X-Z frame analysis mode', () => {
 
     const errors = validateModel(model);
     expect(errors.some((error) => error.message.includes('面外成分'))).toBe(true);
+  });
+
+  it('uses a model-load-relative tolerance for negligible 2D load noise', () => {
+    const model = buildModel();
+    model.nodalLoads[0] = {
+      ...model.nodalLoads[0]!,
+      fz: 1e9,
+      fy: 1e-6,
+    };
+    expect(validateModel(model).some((error) => error.message.includes('面外成分')))
+      .toBe(false);
+
+    model.nodalLoads[0] = { ...model.nodalLoads[0]!, fy: 1e-2 };
+    expect(validateModel(model).some((error) => error.message.includes('面外成分')))
+      .toBe(true);
   });
 
   it('rejects out-of-plane member load components in X-Z 2D mode', () => {
@@ -615,6 +630,7 @@ describe('Stability diagnostics', () => {
       analyzeFrame({ model: indexed });
     } catch (e) {
       error = e as AnalysisError;
+      expect(e).toBeInstanceOf(AnalysisException);
     }
 
     expect(error?.type).toBe('singular');

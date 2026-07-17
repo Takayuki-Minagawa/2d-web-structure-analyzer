@@ -1,68 +1,55 @@
-import type { WorkerRequest, WorkerResponse } from './protocol';
-import type { AnalysisError } from '../core/model/types';
-import { buildIndexedModel } from '../core/model/indexing';
-import { validateModel } from '../core/model/validation';
-import { analyzeFrame } from '../core/analysis/analyzeFrame';
-import { resolveAnalysisLoadModel } from '../core/model/loadCases';
+import type {
+  AnalyzeCanceled,
+  AnalysisExecutionRequestV2,
+  AnyWorkerResponse,
+  WorkerRequest,
+} from './protocol';
+import { isAnalyzeRequestV2 } from './protocol';
+import { createAnalysisResponse } from './analysisRequestHandler';
 
-self.onmessage = (e: MessageEvent<WorkerRequest>) => {
-  const req = e.data;
-  if (req.type === 'analyze') {
-    try {
-      const analysisModel = resolveAnalysisLoadModel(req.model);
+type WorkerPostTarget = {
+  postMessage(message: AnyWorkerResponse, transferables?: Transferable[]): void;
+};
 
-      // Validate
-      const errors = validateModel(analysisModel);
-      if (errors.length > 0) {
-        const firstError = errors[0]!;
-        const resp: WorkerResponse = {
-          type: 'analyze-error',
-          error: firstError,
-        };
-        self.postMessage(resp);
-        return;
-      }
+const workerTarget = self as unknown as WorkerPostTarget;
+const pendingRequests = new Map<string, ReturnType<typeof setTimeout>>();
 
-      // Index
-      const indexed = buildIndexedModel(analysisModel);
+function postResponse(response: AnyWorkerResponse, transferables: Transferable[] = []): void {
+  workerTarget.postMessage(response, transferables);
+}
 
-      // Analyze
-      const result = analyzeFrame({ model: indexed });
+function runRequest(request: AnalysisExecutionRequestV2): void {
+  pendingRequests.delete(request.requestId);
+  const envelope = createAnalysisResponse(request);
+  postResponse(envelope.response, envelope.transferables);
+}
 
-      // Serialize Maps to plain objects for postMessage
-      const elementEndForces: Record<string, number[]> = {};
-      result.elementEndForces.forEach((v, k) => {
-        elementEndForces[k] = Array.from(v);
-      });
-
-      const diagrams: Record<string, { memberId: string; points: import('../core/model/types').DiagramPoint[] }> = {};
-      result.diagrams.forEach((v, k) => {
-        diagrams[k] = { memberId: v.memberId, points: v.points };
-      });
-
-      const resp: WorkerResponse = {
-        type: 'analyze-success',
-        displacements: Array.from(result.displacements),
-        reactions: Array.from(result.reactions),
-        elementEndForces,
-        diagrams,
-        warnings: result.warnings,
-      };
-      self.postMessage(resp);
-    } catch (err) {
-      const analysisErr = err as AnalysisError & Error;
-      const error: AnalysisError = {
-        type: analysisErr.type ?? 'numerical',
-        message: analysisErr.message ?? 'An unknown error occurred during analysis.',
-      };
-      if (analysisErr.elementId !== undefined) error.elementId = analysisErr.elementId;
-      if (analysisErr.nodeId !== undefined) error.nodeId = analysisErr.nodeId;
-      if (analysisErr.diagnostics !== undefined) error.diagnostics = analysisErr.diagnostics;
-      const resp: WorkerResponse = {
-        type: 'analyze-error',
-        error,
-      };
-      self.postMessage(resp);
-    }
+self.onmessage = (event: MessageEvent<WorkerRequest>) => {
+  const request = event.data;
+  if (request.type === 'cancel') {
+    const pending = pendingRequests.get(request.requestId);
+    if (!pending) return;
+    clearTimeout(pending);
+    pendingRequests.delete(request.requestId);
+    const response: AnalyzeCanceled = {
+      type: 'analyze-canceled',
+      requestId: request.requestId,
+    };
+    postResponse(response);
+    return;
   }
+
+  if (!isAnalyzeRequestV2(request)) {
+    const envelope = createAnalysisResponse(request);
+    postResponse(envelope.response, envelope.transferables);
+    return;
+  }
+
+  // Deferring v2 work creates a cancellable queued state. Once the synchronous
+  // numerical solve starts, clients that require hard cancellation should
+  // terminate and recreate the worker.
+  const existing = pendingRequests.get(request.requestId);
+  if (existing) clearTimeout(existing);
+  const timer = setTimeout(() => runRequest(request), 0);
+  pendingRequests.set(request.requestId, timer);
 };

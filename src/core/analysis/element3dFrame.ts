@@ -12,17 +12,15 @@ import type { IndexedMember, EndRelease } from '../model/types';
  *   - Bending in XZ plane (DOF 2,4,8,10): EIy with phi_y = 12EIy/(G*Asy*L^2)
  */
 export function buildLocalStiffness(member: IndexedMember): Float64Array {
-  const { E, G, A, Ix, Iy, Iz, ky, kz, L } = member;
+  const { E, G, A, Ix, Iy, Iz, L } = member;
   const k = new Float64Array(144); // 12x12 row-major
 
   const EA_L = (E * A) / L;
   const GIx_L = (G * Ix) / L;
 
   // Shear deformation parameters
-  const Asy = ky > 0 ? ky * A : 0;
-  const Asz = kz > 0 ? kz * A : 0;
-  const phi_y = (G > 0 && Asy > 0) ? (12 * E * Iy) / (G * Asy * L * L) : 0;
-  const phi_z = (G > 0 && Asz > 0) ? (12 * E * Iz) / (G * Asz * L * L) : 0;
+  const phi_y = computePhiY(member);
+  const phi_z = computePhiZ(member);
 
   // Bending in XY plane (uy, rz) - using EIz
   const dz = 1 + phi_z;
@@ -154,57 +152,7 @@ const RELEASE_DOFS = [3, 4, 5, 9, 10, 11] as const;
  * operates on the already-modified matrix.
  */
 export function applyEndReleases(k: Float64Array, releases: readonly EndRelease[]): void {
-  const N = 12;
-  for (let r = 0; r < releases.length; r++) {
-    const rel = releases[r]!;
-    if (rel.type === 'rigid') continue;
-
-    const p = RELEASE_DOFS[r]!;
-    const Kpp = k[p * N + p]!;
-    if (Math.abs(Kpp) < 1e-30) continue; // already zero – nothing to condense
-
-    if (rel.type === 'pin') {
-      // Condense out DOF p (kθ = 0)
-      for (let i = 0; i < N; i++) {
-        if (i === p) continue;
-        const Kip = k[i * N + p]!;
-        if (Kip === 0) continue;
-        for (let j = 0; j < N; j++) {
-          if (j === p) continue;
-          k[i * N + j] = k[i * N + j]! - Kip * k[p * N + j]! / Kpp;
-        }
-      }
-      // Zero out row and column p
-      for (let i = 0; i < N; i++) {
-        k[p * N + i] = 0;
-        k[i * N + p] = 0;
-      }
-    } else {
-      // Spring with finite stiffness kθ
-      const kTh = rel.kTheta;
-      const denom = Kpp + kTh;
-      if (Math.abs(denom) < 1e-30) continue;
-
-      // Off-diagonal condensation
-      for (let i = 0; i < N; i++) {
-        if (i === p) continue;
-        const Kip = k[i * N + p]!;
-        if (Kip === 0) continue;
-        for (let j = 0; j < N; j++) {
-          if (j === p) continue;
-          k[i * N + j] = k[i * N + j]! - Kip * k[p * N + j]! / denom;
-        }
-      }
-      // Row p and column p
-      for (let j = 0; j < N; j++) {
-        if (j === p) continue;
-        k[p * N + j] = kTh * k[p * N + j]! / denom;
-        k[j * N + p] = kTh * k[j * N + p]! / denom;
-      }
-      // Diagonal
-      k[p * N + p] = kTh * Kpp / denom;
-    }
-  }
+  condenseEndReleaseSystem(k, releases);
 }
 
 /**
@@ -223,59 +171,61 @@ export function applyEndReleasesToForce(
   kOrig: Float64Array,
   releases: readonly EndRelease[]
 ): void {
-  const N = 12;
-  // Work on a copy of K since we condense sequentially
-  const K = new Float64Array(kOrig);
+  // Work on a copy because callers still need the original stiffness matrix.
+  condenseEndReleaseSystem(new Float64Array(kOrig), releases, f);
+}
 
-  for (let r = 0; r < releases.length; r++) {
-    const rel = releases[r]!;
-    if (rel.type === 'rigid') continue;
+/**
+ * Condense an augmented local system [K | f] in one sequential pass.
+ * Passing no force vector condenses K only.
+ */
+function condenseEndReleaseSystem(
+  stiffness: Float64Array,
+  releases: readonly EndRelease[],
+  force?: Float64Array
+): void {
+  const size = 12;
 
-    const p = RELEASE_DOFS[r]!;
-    const Kpp = K[p * N + p]!;
-    if (Math.abs(Kpp) < 1e-30) continue;
+  for (let releaseIndex = 0; releaseIndex < releases.length; releaseIndex++) {
+    const release = releases[releaseIndex]!;
+    if (release.type === 'rigid') continue;
 
-    if (rel.type === 'pin') {
-      const fp = f[p]!;
-      for (let i = 0; i < N; i++) {
-        if (i === p) continue;
-        f[i] = f[i]! - K[i * N + p]! * fp / Kpp;
-      }
-      f[p] = 0;
-      // Also condense K for subsequent releases
-      for (let i = 0; i < N; i++) {
-        if (i === p) continue;
-        for (let j = 0; j < N; j++) {
-          if (j === p) continue;
-          K[i * N + j] = K[i * N + j]! - K[i * N + p]! * K[p * N + j]! / Kpp;
-        }
-      }
-      for (let i = 0; i < N; i++) { K[p * N + i] = 0; K[i * N + p] = 0; }
-    } else {
-      const kTh = rel.kTheta;
-      const denom = Kpp + kTh;
-      if (Math.abs(denom) < 1e-30) continue;
+    const releasedDof = RELEASE_DOFS[releaseIndex]!;
+    const pivot = stiffness[releasedDof * size + releasedDof]!;
+    if (Math.abs(pivot) < 1e-30) continue;
 
-      const fp = f[p]!;
-      for (let i = 0; i < N; i++) {
-        if (i === p) continue;
-        f[i] = f[i]! - K[i * N + p]! * fp / denom;
+    const springStiffness = release.type === 'spring' ? release.kTheta : 0;
+    const denominator = pivot + springStiffness;
+    if (Math.abs(denominator) < 1e-30) continue;
+
+    if (force) {
+      const releasedForce = force[releasedDof]!;
+      for (let row = 0; row < size; row++) {
+        if (row === releasedDof) continue;
+        force[row] = force[row]!
+          - stiffness[row * size + releasedDof]! * releasedForce / denominator;
       }
-      f[p] = kTh * fp / denom;
-      // Condense K for subsequent releases
-      for (let i = 0; i < N; i++) {
-        if (i === p) continue;
-        for (let j = 0; j < N; j++) {
-          if (j === p) continue;
-          K[i * N + j] = K[i * N + j]! - K[i * N + p]! * K[p * N + j]! / denom;
-        }
-      }
-      for (let j = 0; j < N; j++) {
-        if (j === p) continue;
-        K[p * N + j] = kTh * K[p * N + j]! / denom;
-        K[j * N + p] = kTh * K[j * N + p]! / denom;
-      }
-      K[p * N + p] = kTh * Kpp / denom;
+      force[releasedDof] = springStiffness * releasedForce / denominator;
     }
+
+    for (let row = 0; row < size; row++) {
+      if (row === releasedDof) continue;
+      const coupling = stiffness[row * size + releasedDof]!;
+      if (coupling === 0) continue;
+      for (let column = 0; column < size; column++) {
+        if (column === releasedDof) continue;
+        stiffness[row * size + column] = stiffness[row * size + column]!
+          - coupling * stiffness[releasedDof * size + column]! / denominator;
+      }
+    }
+
+    for (let index = 0; index < size; index++) {
+      if (index === releasedDof) continue;
+      stiffness[releasedDof * size + index] = springStiffness
+        * stiffness[releasedDof * size + index]! / denominator;
+      stiffness[index * size + releasedDof] = springStiffness
+        * stiffness[index * size + releasedDof]! / denominator;
+    }
+    stiffness[releasedDof * size + releasedDof] = springStiffness * pivot / denominator;
   }
 }

@@ -1,4 +1,5 @@
-import { create } from 'zustand';
+import { create, useStore } from 'zustand';
+import { temporal, type TemporalState } from 'zundo';
 import type {
   ProjectModel,
   StructuralNode,
@@ -14,10 +15,14 @@ import type {
   AnalysisMode,
   LoadCase,
   LoadCombination,
+  NodalSpringSupport,
 } from '../core/model/types';
-import type { WorkerResponse } from '../worker/protocol';
-import { parseFrameJsonText, isFrameJsonFormat } from '../io/frameJsonParser';
-import { convertFrameJson } from '../io/frameJsonConverter';
+import type {
+  AnalyzeAllSuccess,
+  SerializedTargetResult,
+  WorkerResponse,
+} from '../worker/protocol';
+import { importJsonTextAuto, type JsonImportResult } from '../io/jsonImporter';
 import {
   DEFAULT_ANALYSIS_MODE,
   findNodesOffAnalysisPlane,
@@ -25,7 +30,6 @@ import {
   get2dModeConfig,
   lockNodeToAnalysisPlane,
   normalizeAnalysisMode,
-  XZ_2D_MODE,
 } from '../core/model/analysisMode';
 import {
   DEFAULT_TORSION_RESTRAINT,
@@ -37,6 +41,10 @@ import {
   getLoadCases,
   getLoadCombinations,
 } from '../core/model/loadCases';
+import {
+  ensureDisplayNumbers,
+  nextDisplayNumber,
+} from '../core/model/displayNumbers';
 
 /** Distributive Omit that works correctly with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
@@ -52,17 +60,26 @@ const DEFAULT_RESTRAINT: Restraint = {
 
 export type AnalysisModeUpdateResult =
   | { ok: true }
-  | { ok: false; error: string; nodeIds: string[] };
+  | {
+      ok: false;
+      code: 'off-plane-nodes';
+      mode: Exclude<AnalysisMode, '3d'>;
+      nodeIds: string[];
+    };
 
 export type SelectionCloneResult = {
   nodeIds: string[];
   memberIds: string[];
 };
 
+export type AnalysisResultView =
+  | { kind: 'target'; targetId: string }
+  | { kind: 'envelope'; bound: 'min' | 'max' };
+
 type CoordinateAxis = 'x' | 'y' | 'z';
 type CoordinateOffset = { x: number; y: number; z: number };
 
-function normalizeProjectModel(model: ProjectModel): ProjectModel {
+export function normalizeProjectModel(model: ProjectModel): ProjectModel {
   const loadCases = getLoadCases(model);
   const loadCaseIds = new Set(loadCases.map((loadCase) => loadCase.id));
   const fallbackLoadCaseId = loadCases[0]!.id;
@@ -79,7 +96,7 @@ function normalizeProjectModel(model: ProjectModel): ProjectModel {
     : null;
 
   // Idempotently fills defaults for older persisted/imported project files.
-  return {
+  return ensureDisplayNumbers({
     ...model,
     analysisMode: normalizeAnalysisMode(model.analysisMode),
     springs: model.springs ?? [],
@@ -94,6 +111,8 @@ function normalizeProjectModel(model: ProjectModel): ProjectModel {
       torsionRestraint: normalizeTorsionRestraint(member.torsionRestraint),
     })),
     couplings: model.couplings ?? [],
+    nodeSprings: model.nodeSprings ?? [],
+    gravity: { ...(model.gravity ?? { x: 0, y: 0, z: 0 }) },
     nodalLoads: (model.nodalLoads ?? []).map((load) => ({
       ...load,
       loadCaseId: load.loadCaseId && loadCaseIds.has(load.loadCaseId)
@@ -106,23 +125,17 @@ function normalizeProjectModel(model: ProjectModel): ProjectModel {
         ? load.loadCaseId
         : fallbackLoadCaseId,
     })),
-  };
+  });
 }
 
-function formatOffPlaneError(mode: AnalysisMode, nodeIds: string[]): string {
-  const config = get2dModeConfig(mode);
-  if (!config) return '';
-  return `2D ${config.planeLabel}平面モードに切り替えるには、すべての節点の${config.lockedCoordinateLabel}座標を0にしてください。対象節点: ${nodeIds.join(', ')}`;
-}
-
-function createDefaultModel(): ProjectModel {
+export function createDefaultModel(): ProjectModel {
   const matId = generateId();
   return {
     title: '',
     analysisMode: DEFAULT_ANALYSIS_MODE,
     nodes: [],
     materials: [
-      { id: matId, name: 'Steel', E: 20500, G: 7900, nu: 0.3, expansion: 0.000012 },
+      { id: matId, name: 'Steel', E: 20500, G: 7900, nu: 0.3, expansion: 0.000012, density: 0 },
     ],
     sections: [
       { id: generateId(), name: 'Default', materialId: matId, A: 100, Ix: 1000, Iy: 500, Iz: 500, ky: 0, kz: 0 },
@@ -134,29 +147,73 @@ function createDefaultModel(): ProjectModel {
     activeLoadCombinationId: null,
     members: [],
     couplings: [],
+    nodeSprings: [],
+    gravity: { x: 0, y: 0, z: 0 },
     nodalLoads: [],
     memberLoads: [],
     units: { force: 'kN', length: 'cm', moment: 'kN·cm' },
   };
 }
 
+function replacementState(
+  model: ProjectModel,
+  fitViewVersion: number,
+  lastImportReport: JsonImportResult | null = null,
+) {
+  return {
+    model: normalizeProjectModel(model),
+    analysisResult: null,
+    analysisResults: [] as AnalyzeAllSuccess['results'],
+    analysisEnvelope: null,
+    analysisFactorizationCount: null,
+    analysisResultView: null,
+    analysisError: null,
+    isAnalyzing: false,
+    isResultStale: false,
+    fitViewVersion: fitViewVersion + 1,
+    lastImportReport,
+  } as const;
+}
+
+function targetResultToAnalysisResult(
+  result: SerializedTargetResult<number[]>,
+): AnalysisResult {
+  return {
+    displacements: result.displacements,
+    reactions: result.reactions,
+    elementEndForces: result.elementEndForces,
+    diagrams: result.diagrams,
+    warnings: result.warnings,
+  };
+}
+
 interface ProjectState {
   model: ProjectModel;
   analysisResult: AnalysisResult | null;
+  analysisResults: AnalyzeAllSuccess['results'];
+  analysisEnvelope: AnalyzeAllSuccess['envelope'] | null;
+  analysisFactorizationCount: number | null;
+  analysisResultView: AnalysisResultView | null;
   analysisError: AnalysisError | null;
   isAnalyzing: boolean;
   isResultStale: boolean;
   /** Incremented when a full model load occurs and the view should fit to new content. */
   fitViewVersion: number;
+  lastImportReport: JsonImportResult | null;
 
   // Node operations
   addNode: (x: number, y: number, z: number) => string;
-  updateNode: (id: string, updates: Partial<Pick<StructuralNode, 'x' | 'y' | 'z' | 'restraint'>>) => void;
+  updateNode: (id: string, updates: Partial<Omit<StructuralNode, 'id'>>) => void;
+  updateNodes: (ids: Iterable<string>, updates: Partial<Omit<StructuralNode, 'id'>>) => void;
   removeNode: (id: string) => void;
+  addNodeSpring: (spring: Omit<NodalSpringSupport, 'id'>) => string;
+  updateNodeSpring: (id: string, updates: Partial<Omit<NodalSpringSupport, 'id'>>) => void;
+  removeNodeSpring: (id: string) => void;
 
   // Member operations
   addMember: (ni: string, nj: string) => string;
-  updateMember: (id: string, updates: Partial<Pick<Member, 'sectionId' | 'codeAngle' | 'torsionRestraint'>>) => void;
+  updateMember: (id: string, updates: Partial<Omit<Member, 'id'>>) => void;
+  updateMembers: (ids: Iterable<string>, updates: Partial<Omit<Member, 'id'>>) => void;
   removeMember: (id: string) => void;
   duplicateSelection: (nodeIds: string[], memberIds: string[], offset: CoordinateOffset, copies?: number) => SelectionCloneResult;
   mirrorSelection: (nodeIds: string[], memberIds: string[], axis: CoordinateAxis) => SelectionCloneResult;
@@ -177,6 +234,7 @@ interface ProjectState {
   removeNodalLoad: (id: string) => void;
   addMemberLoad: (load: DistributiveOmit<MemberLoad, 'id'>) => string;
   updateMemberLoad: (id: string, updates: Partial<DistributiveOmit<MemberLoad, 'id'>>) => void;
+  replaceMemberLoad: (id: string, load: DistributiveOmit<MemberLoad, 'id'>) => void;
   removeMemberLoad: (id: string) => void;
 
   // Load cases
@@ -196,7 +254,8 @@ interface ProjectState {
 
   // Analysis
   setAnalyzing: (v: boolean) => void;
-  setAnalysisResult: (resp: WorkerResponse) => void;
+  setAnalysisResult: (resp: WorkerResponse | AnalyzeAllSuccess) => void;
+  selectAnalysisResultView: (view: AnalysisResultView) => void;
   markResultStale: () => void;
   setAnalysisMode: (mode: AnalysisMode) => AnalysisModeUpdateResult;
   flattenNodesTo2dPlane: (mode?: AnalysisMode) => string[];
@@ -204,21 +263,31 @@ interface ProjectState {
 
   // Project
   loadModel: (model: ProjectModel) => void;
-  importFrameJson: (text: string, loadCaseIndex?: number) => void;
-  importJsonAuto: (text: string) => void;
+  importFrameJson: (text: string, loadCaseIndex?: number) => JsonImportResult;
+  importJsonAuto: (text: string) => JsonImportResult;
+  clearImportReport: () => void;
+  setImportReport: (report: JsonImportResult | null) => void;
   resetModel: () => void;
 
   // Units
   updateUnits: (updates: Partial<ProjectModel['units']>) => void;
+  updateGravity: (updates: Partial<NonNullable<ProjectModel['gravity']>>) => void;
 }
 
-export const useProjectStore = create<ProjectState>((set, get) => ({
+type ProjectHistoryState = Pick<ProjectState, 'model'>;
+
+export const useProjectStore = create<ProjectState>()(temporal((set, get) => ({
   model: createDefaultModel(),
   analysisResult: null,
+  analysisResults: [],
+  analysisEnvelope: null,
+  analysisFactorizationCount: null,
+  analysisResultView: null,
   analysisError: null,
   isAnalyzing: false,
   isResultStale: false,
   fitViewVersion: 0,
+  lastImportReport: null,
 
   addNode: (x, y, z) => {
     const id = generateId();
@@ -228,7 +297,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         nodes: [
           ...s.model.nodes,
           lockNodeToAnalysisPlane(
-            { id, x, y, z, restraint: { ...DEFAULT_RESTRAINT } },
+            {
+              id,
+              number: nextDisplayNumber(s.model.nodes),
+              x,
+              y,
+              z,
+              restraint: { ...DEFAULT_RESTRAINT },
+            },
             getAnalysisMode(s.model)
           ),
         ],
@@ -252,6 +328,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }));
   },
 
+  updateNodes: (ids, updates) => {
+    const selected = new Set(ids);
+    if (selected.size === 0) return;
+    set((s) => ({
+      model: {
+        ...s.model,
+        nodes: s.model.nodes.map((node) =>
+          selected.has(node.id)
+            ? lockNodeToAnalysisPlane({ ...node, ...updates }, getAnalysisMode(s.model))
+            : node
+        ),
+      },
+      isResultStale: true,
+    }));
+  },
+
   removeNode: (id) => {
     set((s) => {
       const removedMemberIds = new Set(
@@ -265,10 +357,45 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           nodalLoads: s.model.nodalLoads.filter((l) => l.nodeId !== id),
           memberLoads: s.model.memberLoads.filter((l) => !removedMemberIds.has(l.memberId)),
           couplings: s.model.couplings.filter((c) => c.masterNodeId !== id && c.slaveNodeId !== id),
+          nodeSprings: (s.model.nodeSprings ?? []).filter((spring) => spring.nodeId !== id),
         },
         isResultStale: true,
       };
     });
+  },
+
+  addNodeSpring: (spring) => {
+    const id = generateId();
+    set((s) => ({
+      model: {
+        ...s.model,
+        nodeSprings: [...(s.model.nodeSprings ?? []), { ...spring, id }],
+      },
+      isResultStale: true,
+    }));
+    return id;
+  },
+
+  updateNodeSpring: (id, updates) => {
+    set((s) => ({
+      model: {
+        ...s.model,
+        nodeSprings: (s.model.nodeSprings ?? []).map((spring) =>
+          spring.id === id ? { ...spring, ...updates } : spring
+        ),
+      },
+      isResultStale: true,
+    }));
+  },
+
+  removeNodeSpring: (id) => {
+    set((s) => ({
+      model: {
+        ...s.model,
+        nodeSprings: (s.model.nodeSprings ?? []).filter((spring) => spring.id !== id),
+      },
+      isResultStale: true,
+    }));
   },
 
   addMember: (ni, nj) => {
@@ -279,7 +406,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       model: {
         ...s.model,
         members: [...s.model.members, {
-          id, ni, nj, sectionId,
+          id, number: nextDisplayNumber(s.model.members), ni, nj, sectionId,
           codeAngle: 0,
           iSprings: { x: 0, y: 0, z: 0 },
           jSprings: { x: 0, y: 0, z: 0 },
@@ -305,6 +432,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
                   : normalizeTorsionRestraint(m.torsionRestraint),
               }
             : m
+        ),
+      },
+      isResultStale: true,
+    }));
+  },
+
+  updateMembers: (ids, updates) => {
+    const selected = new Set(ids);
+    if (selected.size === 0) return;
+    set((s) => ({
+      model: {
+        ...s.model,
+        members: s.model.members.map((member) =>
+          selected.has(member.id)
+            ? {
+                ...member,
+                ...updates,
+                torsionRestraint: updates.torsionRestraint !== undefined
+                  ? normalizeTorsionRestraint(updates.torsionRestraint)
+                  : normalizeTorsionRestraint(member.torsionRestraint),
+              }
+            : member
         ),
       },
       isResultStale: true,
@@ -347,6 +496,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const newNodeIds: string[] = [];
       const newMemberIds: string[] = [];
       const mode = getAnalysisMode(s.model);
+      let nodeNumber = nextDisplayNumber(s.model.nodes);
+      let memberNumber = nextDisplayNumber(s.model.members);
 
       for (let copyIndex = 1; copyIndex <= copyCount; copyIndex++) {
         const nodeIdMap = new Map<string, string>();
@@ -357,6 +508,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           newNodes.push(lockNodeToAnalysisPlane({
             ...node,
             id,
+            number: nodeNumber++,
             x: node.x + offset.x * copyIndex,
             y: node.y + offset.y * copyIndex,
             z: node.z + offset.z * copyIndex,
@@ -372,6 +524,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           newMembers.push({
             ...member,
             id,
+            number: memberNumber++,
             ni,
             nj,
             iSprings: { ...member.iSprings },
@@ -414,12 +567,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
       const nodeIdMap = new Map<string, string>();
       const mode = getAnalysisMode(s.model);
+      let nodeNumber = nextDisplayNumber(s.model.nodes);
+      let memberNumber = nextDisplayNumber(s.model.members);
       const newNodes = sourceNodes.map((node) => {
         const id = generateId();
         nodeIdMap.set(node.id, id);
         return lockNodeToAnalysisPlane({
           ...node,
           id,
+          number: nodeNumber++,
           [axis]: -node[axis],
           restraint: { ...node.restraint },
         }, mode);
@@ -431,6 +587,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         return [{
           ...member,
           id: generateId(),
+          number: memberNumber++,
           ni,
           nj,
           iSprings: { ...member.iSprings },
@@ -576,6 +733,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         ...s.model,
         memberLoads: s.model.memberLoads.map((l) =>
           l.id === id ? { ...l, ...updates } as MemberLoad : l
+        ),
+      },
+      isResultStale: true,
+    }));
+  },
+
+  replaceMemberLoad: (id, load) => {
+    set((s) => ({
+      model: {
+        ...s.model,
+        memberLoads: s.model.memberLoads.map((item) =>
+          item.id === id ? { ...load, id } as MemberLoad : item
         ),
       },
       isResultStale: true,
@@ -766,7 +935,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setAnalyzing: (v) => set({ isAnalyzing: v }),
 
   setAnalysisResult: (resp) => {
-    if (resp.type === 'analyze-success') {
+    if (resp.type === 'analyze-all-success') {
+      set((s) => {
+        const preferredTargetId = s.model.activeLoadCombinationId
+          ?? getActiveLoadCaseId(s.model);
+        const selected = resp.results.find((result) => result.target.id === preferredTargetId)
+          ?? resp.results[0];
+        return {
+          analysisResult: selected ? targetResultToAnalysisResult(selected) : null,
+          analysisResults: resp.results,
+          analysisEnvelope: resp.envelope,
+          analysisFactorizationCount: resp.factorizationCount,
+          analysisResultView: selected
+            ? { kind: 'target' as const, targetId: selected.target.id }
+            : null,
+          analysisError: null,
+          isAnalyzing: false,
+          isResultStale: false,
+        };
+      });
+    } else if (resp.type === 'analyze-success') {
       set({
         analysisResult: {
           displacements: resp.displacements,
@@ -775,6 +963,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           diagrams: resp.diagrams,
           warnings: resp.warnings,
         },
+        analysisResults: [],
+        analysisEnvelope: null,
+        analysisFactorizationCount: null,
+        analysisResultView: null,
         analysisError: null,
         isAnalyzing: false,
         isResultStale: false,
@@ -782,6 +974,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     } else {
       set({
         analysisResult: null,
+        analysisResults: [],
+        analysisEnvelope: null,
+        analysisFactorizationCount: null,
+        analysisResultView: null,
         analysisError: resp.error,
         isAnalyzing: false,
         isResultStale: false,
@@ -789,14 +985,32 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
   },
 
+  selectAnalysisResultView: (view) => {
+    set((s) => {
+      if (view.kind === 'envelope') return { analysisResultView: view };
+      const selected = s.analysisResults.find((result) => result.target.id === view.targetId);
+      if (!selected) return {};
+      return {
+        analysisResult: targetResultToAnalysisResult(selected),
+        analysisResultView: view,
+      };
+    });
+  },
+
   markResultStale: () => set({ isResultStale: true }),
 
   setAnalysisMode: (mode) => {
-    if (get2dModeConfig(mode)) {
+    const target2dConfig = get2dModeConfig(mode);
+    if (target2dConfig) {
       const offPlaneNodes = findNodesOffAnalysisPlane(get().model, mode);
       if (offPlaneNodes.length > 0) {
         const nodeIds = offPlaneNodes.map((node) => node.id);
-        return { ok: false, error: formatOffPlaneError(mode, nodeIds), nodeIds };
+        return {
+          ok: false,
+          code: 'off-plane-nodes',
+          mode: target2dConfig.mode,
+          nodeIds,
+        };
       }
     }
 
@@ -831,69 +1045,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return offPlaneNodeIds;
   },
 
-  flattenNodesToXzPlane: () => get().flattenNodesTo2dPlane(XZ_2D_MODE),
+  flattenNodesToXzPlane: () => get().flattenNodesTo2dPlane('xz2d'),
 
-  loadModel: (model) => set((s) => ({
-    model: normalizeProjectModel(model),
-    analysisResult: null,
-    analysisError: null,
-    isResultStale: false,
-    fitViewVersion: s.fitViewVersion + 1,
-  })),
+  loadModel: (model) => set((s) => replacementState(model, s.fitViewVersion)),
 
   importFrameJson: (text, loadCaseIndex) => {
-    const doc = parseFrameJsonText(text);
-    const model = convertFrameJson(doc, loadCaseIndex);
-    set((s) => ({
-      model: normalizeProjectModel(model),
-      analysisResult: null,
-      analysisError: null,
-      isResultStale: false,
-      fitViewVersion: s.fitViewVersion + 1,
-    }));
+    const report = importJsonTextAuto(text, loadCaseIndex);
+    set((s) => replacementState(report.model, s.fitViewVersion, report));
+    return report;
   },
 
   importJsonAuto: (text) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      throw new Error('Invalid JSON');
-    }
-
-    if (isFrameJsonFormat(parsed)) {
-      const doc = parseFrameJsonText(text);
-      const model = convertFrameJson(doc);
-      set((s) => ({
-        model: normalizeProjectModel(model),
-        analysisResult: null,
-        analysisError: null,
-        isResultStale: false,
-        fitViewVersion: s.fitViewVersion + 1,
-      }));
-    } else {
-      const pf = parsed as { model?: ProjectModel };
-      if (pf.model) {
-        set((s) => ({
-          model: normalizeProjectModel(pf.model!),
-          analysisResult: null,
-          analysisError: null,
-          isResultStale: false,
-          fitViewVersion: s.fitViewVersion + 1,
-        }));
-      } else {
-        throw new Error('Unrecognized JSON format');
-      }
-    }
+    const report = importJsonTextAuto(text);
+    set((s) => replacementState(report.model, s.fitViewVersion, report));
+    return report;
   },
 
-  resetModel: () => set((s) => ({
-    model: createDefaultModel(),
-    analysisResult: null,
-    analysisError: null,
-    isResultStale: false,
-    fitViewVersion: s.fitViewVersion + 1,
-  })),
+  clearImportReport: () => set({ lastImportReport: null }),
+  setImportReport: (report) => set({ lastImportReport: report }),
+
+  resetModel: () => set((s) => replacementState(createDefaultModel(), s.fitViewVersion)),
 
   updateUnits: (updates) => {
     set((s) => ({
@@ -904,4 +1075,39 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       isResultStale: true,
     }));
   },
+
+  updateGravity: (updates) => {
+    set((s) => ({
+      model: {
+        ...s.model,
+        gravity: { ...(s.model.gravity ?? { x: 0, y: 0, z: 0 }), ...updates },
+      },
+      isResultStale: true,
+    }));
+  },
+}), {
+  partialize: (state): ProjectHistoryState => ({ model: state.model }),
+  equality: (past, current) => past.model === current.model,
+  limit: 100,
 }));
+
+export const useProjectHistory = <T,>(
+  selector: (state: TemporalState<ProjectHistoryState>) => T,
+): T => useStore(useProjectStore.temporal, selector);
+
+function afterHistoryNavigation(): void {
+  useProjectStore.setState({
+    isResultStale: true,
+    analysisError: null,
+  });
+}
+
+export function undoProject(): void {
+  useProjectStore.temporal.getState().undo();
+  afterHistoryNavigation();
+}
+
+export function redoProject(): void {
+  useProjectStore.temporal.getState().redo();
+  afterHistoryNavigation();
+}

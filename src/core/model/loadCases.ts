@@ -5,6 +5,7 @@ import type {
   MemberLoad,
   NodalLoad,
   ProjectModel,
+  AnalysisTarget,
 } from './types';
 
 export const DEFAULT_LOAD_CASE_ID = 'lc-default';
@@ -70,6 +71,49 @@ export function resolveAnalysisLoadModel(model: ProjectModel): ProjectModel {
   };
 }
 
+/** Return every independently reportable load case followed by combinations. */
+export function getAnalysisTargets(model: ProjectModel): AnalysisTarget[] {
+  return [
+    ...getLoadCases(model).map((loadCase) => ({
+      id: loadCase.id,
+      name: loadCase.name,
+      type: 'loadCase' as const,
+    })),
+    ...getLoadCombinations(model).map((combination) => ({
+      id: combination.id,
+      name: combination.name,
+      type: 'loadCombination' as const,
+    })),
+  ];
+}
+
+/** Build a load-only view for an explicit target without changing active UI state. */
+export function resolveLoadTargetModel(
+  model: ProjectModel,
+  target: AnalysisTarget
+): ProjectModel {
+  if (target.type === 'loadCase') {
+    return {
+      ...model,
+      nodalLoads: model.nodalLoads.filter(
+        (load) => getLoadCaseIdForLoad(load, model) === target.id
+      ),
+      memberLoads: model.memberLoads.filter(
+        (load) => getLoadCaseIdForLoad(load, model) === target.id
+      ),
+    };
+  }
+  const combination = getLoadCombinations(model).find((item) => item.id === target.id);
+  if (!combination) {
+    throw new Error(`荷重組合せ ${target.id} が見つかりません。`);
+  }
+  return {
+    ...model,
+    nodalLoads: expandNodalLoadsForCombination(model, combination),
+    memberLoads: expandMemberLoadsForCombination(model, combination),
+  };
+}
+
 export function getActiveLoadTargetName(model: ProjectModel): string {
   const activeCombination = getActiveLoadCombination(model);
   if (activeCombination) return activeCombination.name;
@@ -131,7 +175,7 @@ function scaleMemberLoad(
   factor: number
 ): MemberLoad {
   const id = `${load.id}@${loadCaseId}*${factor}`;
-  if (load.type === 'point' || load.type === 'udl') {
+  if (load.type !== 'cmq') {
     return {
       ...load,
       id,

@@ -21,6 +21,8 @@ export interface Restraint {
 
 export interface StructuralNode {
   id: NodeId;
+  /** Stable, human-readable sequence number used by UI, reports and imports. */
+  number?: number;
   x: number;
   y: number;
   z: number;
@@ -34,6 +36,8 @@ export interface Material {
   G: number;   // Shear modulus
   nu: number;  // Poisson's ratio
   expansion: number; // Thermal expansion coefficient
+  /** Mass density used by explicit self-weight member loads (mass / volume). */
+  density?: number;
 }
 
 export interface Section {
@@ -51,12 +55,15 @@ export interface Section {
 export interface Spring {
   id: SpringId;
   number: number;
-  method: number; // 0: rigid, 1: pin, etc.
+  /** Opaque FrameModelMaker method code; connection behavior is defined by number/kTheta. */
+  method: number;
   kTheta: number; // Rotational spring stiffness
 }
 
 export interface Member {
   id: MemberId;
+  /** Stable, human-readable sequence number used by UI, reports and imports. */
+  number?: number;
   ni: NodeId;  // i-end node
   nj: NodeId;  // j-end node
   sectionId: SectionId;
@@ -85,7 +92,9 @@ export interface NodalLoad {
   mz: number;
 }
 
-export type MemberLoadDirection = 'localX' | 'localY' | 'localZ';
+export type LocalMemberLoadDirection = 'localX' | 'localY' | 'localZ';
+export type GlobalMemberLoadDirection = 'globalX' | 'globalY' | 'globalZ';
+export type MemberLoadDirection = LocalMemberLoadDirection | GlobalMemberLoadDirection;
 
 export interface PointMemberLoad {
   id: string;
@@ -128,7 +137,35 @@ export interface CMQMemberLoad {
   moz: number;
 }
 
-export type MemberLoad = PointMemberLoad | UniformMemberLoad | CMQMemberLoad;
+/** Uniform temperature change. `value` is delta-T in the model's temperature scale. */
+export interface TemperatureMemberLoad {
+  id: string;
+  loadCaseId?: LoadCaseId;
+  memberId: MemberId;
+  type: 'temperature';
+  /** Kept explicit so generic load editors can display this as an axial effect. */
+  direction: 'localX';
+  value: number;
+}
+
+/** Self-weight generated from material density, section area and project gravity. */
+export interface SelfWeightMemberLoad {
+  id: string;
+  loadCaseId?: LoadCaseId;
+  memberId: MemberId;
+  type: 'selfWeight';
+  /** Display hint; the actual direction is the project gravity vector. */
+  direction: GlobalMemberLoadDirection;
+  /** Dimensionless multiplier, normally 1. */
+  value: number;
+}
+
+export type MemberLoad =
+  | PointMemberLoad
+  | UniformMemberLoad
+  | CMQMemberLoad
+  | TemperatureMemberLoad
+  | SelfWeightMemberLoad;
 
 export interface LoadCase {
   id: LoadCaseId;
@@ -159,6 +196,18 @@ export interface CouplingConstraint {
   rz: boolean;
 }
 
+/** Six diagonal support-spring stiffnesses in global nodal DOF order. */
+export interface NodalSpringSupport {
+  id: string;
+  nodeId: NodeId;
+  ux: number;
+  uy: number;
+  uz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
 // ── Project model ──
 export interface ProjectModel {
   title: string;
@@ -173,6 +222,10 @@ export interface ProjectModel {
   activeLoadCombinationId?: LoadCombinationId | null;
   members: Member[];
   couplings: CouplingConstraint[];
+  /** Optional for backward compatibility with existing project files. */
+  nodeSprings?: NodalSpringSupport[];
+  /** Global acceleration vector used by explicit self-weight loads. */
+  gravity?: { x: number; y: number; z: number };
   nodalLoads: NodalLoad[];
   memberLoads: MemberLoad[];
   units: {
@@ -221,10 +274,19 @@ export interface IndexedMember {
   Iz: number; // Second moment about local Z
   ky: number; // Shear area ratio Y
   kz: number; // Shear area ratio Z
+  expansion?: number; // Thermal expansion coefficient; zero for legacy/manual indexed members
+  density?: number; // Mass density; zero when omitted from the source material
   L: number;  // length
   lambda: Float64Array; // 3x3 rotation matrix (9 elements, row-major)
+  /** Optional immutable base matrices cached by indexing for repeated cases. */
+  localStiffness?: Float64Array;
+  transformation?: Float64Array;
   /** End releases: [ix, iy, iz, jx, jy, jz] mapped to local DOF [3,4,5,9,10,11] */
   releases: [EndRelease, EndRelease, EndRelease, EndRelease, EndRelease, EndRelease];
+}
+
+export interface IndexedNodalSpringSupport extends NodalSpringSupport {
+  nodeIndex: number;
 }
 
 export interface IndexedModel {
@@ -232,6 +294,8 @@ export interface IndexedModel {
   members: IndexedMember[];
   nodalLoads: NodalLoad[];
   memberLoads: MemberLoad[];
+  nodeSprings: IndexedNodalSpringSupport[];
+  gravity: { x: number; y: number; z: number };
   nodeCount: number;
   dofCount: number; // nodeCount * 6
   nodeIdToIndex: Map<NodeId, number>;
@@ -272,6 +336,36 @@ export interface AnalysisOutput {
   elementEndForces: Map<MemberId, Float64Array>;
   diagrams: Map<MemberId, DiagramSeries>;
   warnings: string[];
+}
+
+export interface AnalysisTarget {
+  id: string;
+  name: string;
+  type: 'loadCase' | 'loadCombination';
+}
+
+export interface AnalysisTargetResult extends AnalysisOutput {
+  target: AnalysisTarget;
+}
+
+export interface ComponentEnvelope {
+  min: Float64Array;
+  max: Float64Array;
+  minTargetIds: string[];
+  maxTargetIds: string[];
+}
+
+export interface AnalysisEnvelope {
+  displacements: ComponentEnvelope;
+  reactions: ComponentEnvelope;
+  elementEndForces: Map<MemberId, ComponentEnvelope>;
+}
+
+export interface MultiTargetAnalysisOutput {
+  results: AnalysisTargetResult[];
+  envelope: AnalysisEnvelope;
+  /** Exposed to make the one-factorization contract observable in tests/clients. */
+  factorizationCount: number;
 }
 
 export interface AnalysisResult {

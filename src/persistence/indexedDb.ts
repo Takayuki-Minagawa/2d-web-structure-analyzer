@@ -1,25 +1,29 @@
 import { get, set } from 'idb-keyval';
 import type { ProjectModel } from '../core/model/types';
+import {
+  CURRENT_PROJECT_SCHEMA_VERSION,
+  parseProjectFile,
+  type ProjectFileImportResult,
+} from '../io/projectFileParser';
 
 const PROJECT_KEY = '3d-frame-project';
-const CURRENT_SCHEMA_VERSION = 2;
 
 export async function saveProject(model: ProjectModel): Promise<void> {
   await set(PROJECT_KEY, {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    schemaVersion: CURRENT_PROJECT_SCHEMA_VERSION,
     savedAt: new Date().toISOString(),
     model,
   });
 }
 
-export async function loadProject(): Promise<ProjectModel | null> {
+/** Load, validate, and migrate the autosave while retaining migration warnings. */
+export async function loadProjectWithReport(): Promise<ProjectFileImportResult | null> {
   const data = await get(PROJECT_KEY);
-  if (data && typeof data === 'object' && 'model' in data) {
-    const stored = data as { schemaVersion?: number; model: ProjectModel };
-    // Only load schema version 2+ (3D); discard legacy 2D data
-    if (stored.schemaVersion && stored.schemaVersion >= CURRENT_SCHEMA_VERSION) {
-      return stored.model;
-    }
-  }
-  return null;
+  if (data == null) return null;
+  return parseProjectFile(data);
+}
+
+/** Compatibility wrapper for callers that only need the restored model. */
+export async function loadProject(): Promise<ProjectModel | null> {
+  return (await loadProjectWithReport())?.model ?? null;
 }

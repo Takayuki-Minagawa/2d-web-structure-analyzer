@@ -14,12 +14,14 @@ export function assembleGlobalStiffness(model: IndexedModel): Float64Array {
   const { dofMap } = model;
 
   for (const member of model.members) {
-    const kLocal = buildLocalStiffness(member);
+    const kLocal = member.localStiffness
+      ? new Float64Array(member.localStiffness)
+      : buildLocalStiffness(member);
 
     // Apply end releases via static condensation (modifies kLocal in place)
     applyEndReleases(kLocal, member.releases);
 
-    const T = buildTransformationMatrix(member);
+    const T = member.transformation ?? buildTransformationMatrix(member);
     const kGlobal = transformToGlobal(kLocal, T);
 
     // DOF mapping: member's 12 DOFs -> global DOF indices (with coupling)
@@ -32,6 +34,20 @@ export function assembleGlobalStiffness(model: IndexedModel): Float64Array {
         const gj = dofMap[dofs[j]!]!;
         K[gi * n + gj] = K[gi * n + gj]! + kGlobal[i * MEMBER_DOF + j]!;
       }
+    }
+  }
+
+  // Diagonal support springs are expressed in global nodal DOF order. A
+  // spring attached to a coupled slave contributes to the effective master.
+  for (const spring of model.nodeSprings) {
+    const stiffnesses = [spring.ux, spring.uy, spring.uz, spring.rx, spring.ry, spring.rz];
+    const base = spring.nodeIndex * 6;
+    for (let localDof = 0; localDof < 6; localDof++) {
+      const stiffness = stiffnesses[localDof]!;
+      if (stiffness === 0) continue;
+      const effectiveDof = dofMap[base + localDof]!;
+      K[effectiveDof * n + effectiveDof] =
+        K[effectiveDof * n + effectiveDof]! + stiffness;
     }
   }
 

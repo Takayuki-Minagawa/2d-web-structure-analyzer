@@ -6,6 +6,7 @@ import type {
   Restraint,
   StructuralNode,
 } from './types';
+import { computeMemberLocalAxes, type Vector3 } from './localAxes';
 
 type CoordinateAxis = 'x' | 'y' | 'z';
 type DofKey = keyof Restraint;
@@ -22,17 +23,12 @@ export interface TwoDimensionalModeConfig {
 }
 
 export const DEFAULT_ANALYSIS_MODE: AnalysisMode = '3d';
-export const XZ_2D_MODE: AnalysisMode = 'xz2d';
-export const XY_2D_MODE: AnalysisMode = 'xy2d';
-export const YZ_2D_MODE: AnalysisMode = 'yz2d';
-export const XZ_PLANE_TOLERANCE = 1e-9;
-export const TWO_D_PLANE_TOLERANCE = XZ_PLANE_TOLERANCE;
-export const XZ_2D_CODE_ANGLE_TOLERANCE = 1e-8;
-export const TWO_D_CODE_ANGLE_TOLERANCE = XZ_2D_CODE_ANGLE_TOLERANCE;
+export const TWO_D_PLANE_TOLERANCE = 1e-9;
+export const TWO_D_CODE_ANGLE_TOLERANCE = 1e-8;
 
 export const TWO_DIMENSIONAL_MODES: TwoDimensionalModeConfig[] = [
   {
-    mode: XZ_2D_MODE,
+    mode: 'xz2d',
     planeLabel: 'X-Z',
     lockedCoordinate: 'y',
     lockedCoordinateLabel: 'Y',
@@ -42,7 +38,7 @@ export const TWO_DIMENSIONAL_MODES: TwoDimensionalModeConfig[] = [
     allowedNodalLoadComponents: ['fx', 'fz', 'my'],
   },
   {
-    mode: XY_2D_MODE,
+    mode: 'xy2d',
     planeLabel: 'X-Y',
     lockedCoordinate: 'z',
     lockedCoordinateLabel: 'Z',
@@ -52,7 +48,7 @@ export const TWO_DIMENSIONAL_MODES: TwoDimensionalModeConfig[] = [
     allowedNodalLoadComponents: ['fx', 'fy', 'mz'],
   },
   {
-    mode: YZ_2D_MODE,
+    mode: 'yz2d',
     planeLabel: 'Y-Z',
     lockedCoordinate: 'x',
     lockedCoordinateLabel: 'X',
@@ -68,7 +64,7 @@ const TWO_DIMENSIONAL_MODE_BY_ID = new Map<AnalysisMode, TwoDimensionalModeConfi
 );
 
 function isKnownAnalysisMode(value: unknown): value is AnalysisMode {
-  return value === '3d' || value === XZ_2D_MODE || value === XY_2D_MODE || value === YZ_2D_MODE;
+  return value === '3d' || value === 'xz2d' || value === 'xy2d' || value === 'yz2d';
 }
 
 export function normalizeAnalysisMode(value: unknown): AnalysisMode {
@@ -95,10 +91,6 @@ export function is2dMode(model: ProjectModel): boolean {
   return is2dAnalysisMode(getAnalysisMode(model));
 }
 
-export function isXz2dMode(model: ProjectModel): boolean {
-  return getAnalysisMode(model) === XZ_2D_MODE;
-}
-
 export function findNodesOffAnalysisPlane(
   model: ProjectModel,
   mode = getAnalysisMode(model),
@@ -109,26 +101,12 @@ export function findNodesOffAnalysisPlane(
   return model.nodes.filter((node) => Math.abs(node[config.lockedCoordinate]) > tolerance);
 }
 
-export function findNodesOffXzPlane(
-  model: ProjectModel,
-  tolerance = TWO_D_PLANE_TOLERANCE
-): StructuralNode[] {
-  return findNodesOffAnalysisPlane(model, XZ_2D_MODE, tolerance);
-}
-
 export function is2dCodeAngleSupported(
   codeAngle: number,
   tolerance = TWO_D_CODE_ANGLE_TOLERANCE
 ): boolean {
   const normalized = ((codeAngle % 180) + 180) % 180;
   return normalized <= tolerance || Math.abs(normalized - 180) <= tolerance;
-}
-
-export function isXz2dCodeAngleSupported(
-  codeAngle: number,
-  tolerance = TWO_D_CODE_ANGLE_TOLERANCE
-): boolean {
-  return is2dCodeAngleSupported(codeAngle, tolerance);
 }
 
 export function findMembersWithUnsupported2dOrientation(
@@ -139,12 +117,6 @@ export function findMembersWithUnsupported2dOrientation(
   return model.members.filter((member) =>
     !is2dCodeAngleSupported(member.codeAngle)
   );
-}
-
-export function findMembersWithUnsupportedXz2dOrientation(
-  model: ProjectModel
-): Member[] {
-  return findMembersWithUnsupported2dOrientation(model, XZ_2D_MODE);
 }
 
 export function getEffectiveRestraint(
@@ -167,65 +139,6 @@ export function lockNodeToAnalysisPlane<T extends Pick<StructuralNode, 'x' | 'y'
   const config = get2dModeConfig(mode);
   if (!config) return node;
   return { ...node, [config.lockedCoordinate]: 0 };
-}
-
-interface Vector3 {
-  x: number;
-  y: number;
-  z: number;
-}
-
-function normalizeVector(vector: Vector3): Vector3 | null {
-  const length = Math.sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
-  if (length <= TWO_D_PLANE_TOLERANCE) return null;
-  return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
-}
-
-function cross(a: Vector3, b: Vector3): Vector3 {
-  return {
-    x: a.y * b.z - a.z * b.y,
-    y: a.z * b.x - a.x * b.z,
-    z: a.x * b.y - a.y * b.x,
-  };
-}
-
-function rotateLocalTransverseAxes(
-  localY: Vector3,
-  localZ: Vector3,
-  codeAngle: number
-): { localY: Vector3; localZ: Vector3 } {
-  if (codeAngle === 0) return { localY, localZ };
-  const theta = codeAngle * Math.PI / 180;
-  const cosT = Math.cos(theta);
-  const sinT = Math.sin(theta);
-  return {
-    localY: {
-      x: localY.x * cosT + localZ.x * sinT,
-      y: localY.y * cosT + localZ.y * sinT,
-      z: localY.z * cosT + localZ.z * sinT,
-    },
-    localZ: {
-      x: -localY.x * sinT + localZ.x * cosT,
-      y: -localY.y * sinT + localZ.y * cosT,
-      z: -localY.z * sinT + localZ.z * cosT,
-    },
-  };
-}
-
-function computeMemberLocalAxes(ni: StructuralNode, nj: StructuralNode, codeAngle: number): {
-  localY: Vector3;
-  localZ: Vector3;
-} | null {
-  const localX = normalizeVector({ x: nj.x - ni.x, y: nj.y - ni.y, z: nj.z - ni.z });
-  if (!localX) return null;
-
-  const reference = Math.abs(localX.z) > 0.95
-    ? { x: 1, y: 0, z: 0 }
-    : { x: 0, y: 0, z: 1 };
-  const localYBase = normalizeVector(cross(reference, localX));
-  if (!localYBase) return null;
-  const localZBase = cross(localX, localYBase);
-  return rotateLocalTransverseAxes(localYBase, localZBase, codeAngle);
 }
 
 function normalVector(axis: CoordinateAxis): Vector3 {

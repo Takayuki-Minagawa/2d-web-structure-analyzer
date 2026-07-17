@@ -1,6 +1,7 @@
 import type { ProjectModel } from '../../core/model/types';
 import { getAnalysisMode, getEffectiveRestraint } from '../../core/model/analysisMode';
 import { getTorsionRestraintSourceDofs } from '../../core/model/torsionRestraint';
+import { resolveDofMap } from '../../core/model/couplings';
 
 export type ReactionCell = {
   value: number | null;
@@ -22,22 +23,7 @@ export function buildEffectiveReactionRows(
   const dofCount = nodeCount * 6;
   const analysisMode = getAnalysisMode(model);
 
-  // Build DOF map (same logic as indexing.ts)
-  const dofMap = new Int32Array(dofCount);
-  for (let i = 0; i < dofMap.length; i++) dofMap[i] = i;
-  for (const c of model.couplings ?? []) {
-    const mi = nodeIdToIndex.get(c.masterNodeId);
-    const si = nodeIdToIndex.get(c.slaveNodeId);
-    if (mi === undefined || si === undefined) continue;
-    const flags = [c.ux, c.uy, c.uz, c.rx, c.ry, c.rz];
-    for (let d = 0; d < 6; d++) {
-      if (!flags[d]) continue;
-      const slaveDof = si * 6 + d;
-      let resolved = mi * 6 + d;
-      while (dofMap[resolved] !== resolved) resolved = dofMap[resolved]!;
-      dofMap[slaveDof] = resolved;
-    }
-  }
+  const dofMap = resolveDofMap(model, nodeIdToIndex);
 
   const constrainedSourceDofs = new Uint8Array(dofCount);
   for (let i = 0; i < model.nodes.length; i++) {
